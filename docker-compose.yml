@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-psycare}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-psycare}
+      POSTGRES_DB: ${POSTGRES_DB:-psycare}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 数据库端口不发布到宿主，仅在 compose 内网互访
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-psycare} -d ${POSTGRES_DB:-psycare}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build: ./backend
+    container_name: ${COMPOSE_PROJECT_NAME}-app
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-psycare}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-psycare}
+      DB_NAME: ${POSTGRES_DB:-psycare}
+      JWT_SECRET: ${JWT_SECRET:-psycare-demo-secret-change-me}
+      PORT: 3000
+    depends_on:
+      db:
+        condition: service_healthy
+    # 应用后端不直接发布到宿主，由 web(nginx) 反代
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    container_name: ${COMPOSE_PROJECT_NAME}-web
+    ports:
+      - "${CC_PUBLISH_PORT}:8080"
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  pgdata:

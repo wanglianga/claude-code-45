@@ -1,0 +1,26 @@
+html, body, #root { height: 100%; margin: 0; }
+body { background: #f4f6f5; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+.app-header {
+  background: linear-gradient(90deg, #235246, #2f6b5e);
+  color: #fff; display: flex; align-items: center; padding: 0 24px; height: 58px;
+  position: sticky; top: 0; z-index: 10;
+}
+.app-header .title { font-size: 18px; font-weight: 600; }
+.app-header .sub { opacity: .75; margin-left: 12px; font-size: 13px; }
+.app-header .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.page-title { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+.page-desc { color: #888; margin-bottom: 16px; }
+.timeline-crisis .ant-timeline-item-head { box-shadow: 0 0 0 0; }
+.chain-crisis { color: #cf1322; font-weight: 600; }
+.login-wrap {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #235246 0%, #3a806f 60%, #79b8a6 100%);
+}
+.login-card { width: 400px; background: #fff; border-radius: 14px; padding: 32px 32px 24px;
+  box-shadow: 0 18px 60px rgba(0,0,0,.25); }
+.login-card h1 { font-size: 22px; margin: 0 0 4px; color: #235246; }
+.login-card .p { color: #888; margin-bottom: 22px; font-size: 13px; }
+.demo-accounts { margin-top: 14px; font-size: 12px; color: #777; line-height: 1.9; }
+.demo-accounts code { background: #f2f4f3; padding: 1px 6px; border-radius: 4px; }
+.section-card { margin-bottom: 16px; }
+.muted { color: #999; }
