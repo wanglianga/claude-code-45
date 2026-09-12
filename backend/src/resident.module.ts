@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   Controller, Get, Post, Body, Param, Query, UseGuards, BadRequestException, NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, MoreThan } from 'typeorm';
@@ -85,8 +86,12 @@ export class ResidentController {
 
   @Get('requests')
   async listRequests(@CurrentUser() u: JwtPayload, @Query('scope') scope?: string) {
+    // scope=all 是社区监管视角，仅管理员可用；社工/咨询师不得借此读取全部居民申请
+    if (scope === 'all' && u.role !== 'admin') {
+      throw new ForbiddenException('仅社区管理者可查看全量申请');
+    }
     const where: any = {};
-    if (u.role === 'resident' && scope !== 'all') where.residentId = u.sub;
+    if (!(u.role === 'admin' && scope === 'all')) where.residentId = u.sub;
     const list = await this.requests.find({
       where, order: { createdAt: 'DESC' }, relations: ['resident'],
     });

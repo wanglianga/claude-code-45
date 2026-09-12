@@ -38,3 +38,4 @@ CLAUDE.md
 qa/
 output/
 screenshots/
+.playwright-cli/

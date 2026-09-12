@@ -76,5 +76,6 @@ export const CHAIN_TYPE_LABEL: Record<string, string> = {
   followup: '随访', rating: '服务评价', referral: '转介', receipt: '转介回执',
   crisis: '危机事件', crisis_process: '危机处置', crisis_resolve: '危机解除',
   risk_upgrade: '风险升级', family_request: '家属申请', family_review: '家属申请审批',
+  family_view: '家属查看记录', family_view_denied: '家属查看被拒',
   no_show: '爽约登记', leave_reschedule: '请假改约', leave_stranded: '请假挂起',
 };

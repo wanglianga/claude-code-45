@@ -235,6 +235,7 @@ export class FamilyAccessRequest {
   @Column({ type: 'text', default: '' }) reviewNote: string;
   @Column({ type: 'timestamptz', nullable: true }) approvedAt: Date | null;
   @Column({ type: 'timestamptz', nullable: true }) expiresAt: Date | null;
+  @Column({ type: 'timestamptz', nullable: true }) viewedAt: Date | null; // 一次性授权：成功查看后写入，再次查看即拒绝
   @Column({ type: 'timestamptz', default: () => 'now()' }) createdAt: Date;
 }
 

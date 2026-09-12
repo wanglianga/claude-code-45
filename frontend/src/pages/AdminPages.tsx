@@ -231,8 +231,17 @@ function ApprovedFamilyList({ onView }: { onView: (r: any) => void }) {
       style={{ marginTop: 8 }} rowKey="id" dataSource={rows} pagination={false} size="small"
       columns={[
         { title: '家属', render: (_, r) => `${r.applicantName}（${r.relation}）` },
+        {
+          title: '授权状态', render: (_, r) => r.viewedAt
+            ? <Tag color="red">一次性授权已使用（{dayjs(r.viewedAt).format('MM-DD HH:mm')}）</Tag>
+            : <Tag color="green">未使用，可查看一次</Tag>,
+        },
         { title: '有效期至', render: (_, r) => r.expiresAt ? dayjs(r.expiresAt).format('MM-DD HH:mm') : '—' },
-        { title: '操作', render: (_, r) => <Button size="small" onClick={() => onView(r)}>查看脱敏摘要</Button> },
+        {
+          title: '操作', render: (_, r) => r.viewedAt
+            ? <Button size="small" disabled title="一次性授权已使用，再次查看将被拒绝并留痕">已查看</Button>
+            : <Button size="small" type="primary" onClick={() => onView(r)}>查看脱敏摘要（仅此一次）</Button>,
+        },
       ]}
     />
   );

@@ -105,23 +105,50 @@ export class AdminController {
     return { ok: true };
   }
 
-  // 审批通过后，家属/社工可凭批准单查看脱敏摘要
+  // 审批通过后，凭批准单仅可一次性查看脱敏摘要
   @Get('family-requests/:id/record')
-  async familyRecord(@Param('id') id: string) {
+  async familyRecord(
+    @CurrentUser() u: JwtPayload, @Param('id') id: string,
+  ) {
     const f = await this.family.findOne({ where: { id } });
     if (!f) throw new NotFoundException();
-    if (f.status !== 'approved') throw new BadRequestException('申请未获批准');
-    if (f.expiresAt && f.expiresAt.getTime() < Date.now()) {
-      throw new BadRequestException('授权已过期（72小时一次性授权）');
+    // 每次访问尝试都留痕；重复查看一律拒绝，杜绝授权窗口内反复调阅
+    if (f.status === 'approved' && !f.viewedAt) {
+      if (f.expiresAt && f.expiresAt.getTime() < Date.now()) {
+        await this.chain.log({
+          appointmentId: f.appointmentId, actorId: u.sub, actorName: u.realName,
+          type: 'family_view_denied',
+          detail: `家属 ${f.applicantName} 的授权已过期，查看脱敏摘要被拒绝`,
+        });
+        throw new BadRequestException('授权已过期（72小时一次性授权）');
+      }
+      const records = await this.records.find({
+        where: { appointmentId: f.appointmentId }, order: { createdAt: 'ASC' },
+      });
+      // 首次也是唯一一次成功查看：立即标记 consumed，之后再请求即拒绝
+      f.viewedAt = new Date();
+      await this.family.save(f);
+      await this.chain.log({
+        appointmentId: f.appointmentId, actorId: u.sub, actorName: u.realName,
+        type: 'family_view',
+        detail: `家属 ${f.applicantName}（${f.relation}）查看脱敏风险摘要：${records.length} 条记录（一次性授权已使用）`,
+      });
+      // 最小必要原则：仅返回风险评估与干预建议摘要，不含咨询过程原文
+      return records.map(r => ({
+        id: r.id, topic: r.topic, riskLevel: r.riskLevel,
+        riskAssessment: r.riskAssessment, interventionAdvice: r.interventionAdvice, createdAt: r.createdAt,
+      }));
     }
-    const records = await this.records.find({
-      where: { appointmentId: f.appointmentId }, order: { createdAt: 'ASC' },
+    // 未批准 / 已使用 / 已过期 → 拒绝并记录
+    const reason = f.status !== 'approved'
+      ? '申请未获批准'
+      : '一次性授权已使用（摘要已查看过，再次查看被拒绝）';
+    await this.chain.log({
+      appointmentId: f.appointmentId, actorId: u.sub, actorName: u.realName,
+      type: 'family_view_denied',
+      detail: `家属 ${f.applicantName} 再次/非法查看脱敏摘要被拒绝：${reason}`,
     });
-    // 最小必要原则：仅返回风险评估与干预建议摘要，不含咨询过程原文
-    return records.map(r => ({
-      id: r.id, topic: r.topic, riskLevel: r.riskLevel,
-      riskAssessment: r.riskAssessment, interventionAdvice: r.interventionAdvice, createdAt: r.createdAt,
-    }));
+    throw new BadRequestException(reason);
   }
 
   // ---------- 咨询师请假审批 + 受影响预约改约 ----------
