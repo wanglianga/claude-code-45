@@ -10,6 +10,7 @@ import {
   TRIAGE_STATUS,
 } from '../labels';
 import ChainTimeline from '../ChainTimeline';
+import { fmtTime, fmtMin, fmtDateTime } from '../time';
 
 const { TextArea } = Input;
 
@@ -69,7 +70,7 @@ function Appointments() {
       <Table
         rowKey="id" dataSource={rows} pagination={{ pageSize: 8 }}
         columns={[
-          { title: '预约时间', render: (_, r) => dayjs(r.scheduledAt).format('MM-DD HH:mm') },
+          { title: '预约时间', render: (_, r) => fmtMin(r.scheduledAt) },
           { title: '居民', dataIndex: 'residentName' },
           { title: '咨询师', dataIndex: 'counselorName' },
           { title: '主题', render: (_, r) => <><Tag>{r.topicCategory}</Tag><span className="muted">{r.topic?.slice(0, 18)}…</span></> },
@@ -114,7 +115,7 @@ function Appointments() {
                     {detail.triage.scaleResult && <div>量表：{detail.triage.scaleResult}{detail.triage.scaleScore != null ? `（${detail.triage.scaleScore}分）` : ''}</div>}
                     <div>紧急联系人：{detail.triage.emergencyContactName}（{detail.triage.emergencyContactRelation}）{detail.triage.emergencyContactPhone}</div>
                     {detail.triage.emergencyContactResponse && <div>联系人响应：{detail.triage.emergencyContactResponse}</div>}
-                    <div className="muted">响应社工：{detail.triage.socialWorkerName}｜{detail.triage.respondedAt ? dayjs(detail.triage.respondedAt).format('MM-DD HH:mm') : '未响应'}</div>
+                    <div className="muted">响应社工：{detail.triage.socialWorkerName}｜{detail.triage.respondedAt ? fmtMin(detail.triage.respondedAt) : '未响应'}</div>
                   </div>
                 }
               />
@@ -143,7 +144,7 @@ function Appointments() {
             {detail.followups?.length > 0 && (
               <Card size="small" style={{ marginTop: 8 }} title="随访记录">
                 {detail.followups.map((f: any) => (
-                  <div key={f.id}>· {dayjs(f.createdAt).format('MM-DD HH:mm')}（{f.method === 'phone' ? '电话' : f.method === 'visit' ? '上门' : '线上'}，风险{URGENCY.find(u => u.value === f.riskLevel)?.label}）：{f.content}</div>
+                  <div key={f.id}>· {fmtMin(f.createdAt)}（{f.method === 'phone' ? '电话' : f.method === 'visit' ? '上门' : '线上'}，风险{URGENCY.find(u => u.value === f.riskLevel)?.label}）：{f.content}</div>
                 ))}
               </Card>
             )}
@@ -261,7 +262,7 @@ function CrisisBoard() {
       <Table
         rowKey="id" dataSource={list} pagination={false}
         columns={[
-          { title: '时间', render: (_, r) => dayjs(r.createdAt).format('MM-DD HH:mm') },
+          { title: '时间', render: (_, r) => fmtMin(r.createdAt) },
           { title: '风险级别', dataIndex: 'level', render: (v: string) => {
             const o = SELF_HARM.find(x => x.value === v); return <Tag color={o?.color}>{o?.label || v}</Tag>; } },
           { title: '情况', dataIndex: 'description', render: (v: string) => <span style={{ maxWidth: 320 }}>{v}</span> },
@@ -282,7 +283,7 @@ function CrisisBoard() {
           <Form.Item name="appointmentId" label="关联预约（可空）">
             <Select allowClear options={appts
               .filter((a: any) => ['pending', 'confirmed', 'in_progress', 'no_show'].includes(a.status))
-              .map((a: any) => ({ value: a.id, label: `${dayjs(a.scheduledAt).format('MM-DD HH:mm')} ${a.residentName}｜${a.topicCategory}` }))} />
+              .map((a: any) => ({ value: a.id, label: `${fmtMin(a.scheduledAt)} ${a.residentName}｜${a.topicCategory}` }))} />
           </Form.Item>
           <Form.Item name="residentName" label="居民姓名（未关联预约时填写）"><Input /></Form.Item>
           <Form.Item name="level" label="风险级别" rules={[{ required: true }]}>
@@ -316,29 +317,37 @@ function TriageBoard() {
 
   const submitVerify = async () => {
     const v = await form.validateFields();
-    await post(`/worker/triage/${detail.triage.id}/verify`, {
-      ...v,
-      scaleScore: v.scaleScore === '' || v.scaleScore == null ? null : Number(v.scaleScore),
-    });
-    message.success('电话核实已记录（响应时间已留痕）'); setMode('detail'); form.resetFields(); refresh();
+    try {
+      await post(`/worker/triage/${detail.triage.id}/verify`, {
+        ...v,
+        scaleScore: v.scaleScore === '' || v.scaleScore == null ? null : Number(v.scaleScore),
+      });
+      message.success('电话核实已记录（响应时间已留痕）'); setMode('detail'); form.resetFields(); refresh();
+    } catch (e: any) { message.error(e.message); }
   };
   const submitContact = async () => {
     const v = await contactForm.validateFields();
-    await post(`/worker/triage/${detail.triage.id}/emergency-contact`, v);
-    message.success('紧急联系人响应已写入危机记录'); setMode('detail'); contactForm.resetFields(); refresh();
+    try {
+      await post(`/worker/triage/${detail.triage.id}/emergency-contact`, v);
+      message.success('紧急联系人响应已写入危机记录'); setMode('detail'); contactForm.resetFields(); refresh();
+    } catch (e: any) { message.error(e.message); }
   };
   const submitRefer = async () => {
     const v = await referForm.validateFields();
-    await post(`/worker/triage/${detail.triage.id}/refer`, v);
-    message.success('已转介医院，等待回执闭环'); setMode('detail'); referForm.resetFields(); refresh();
+    try {
+      await post(`/worker/triage/${detail.triage.id}/refer`, v);
+      message.success('已转介医院，等待回执闭环'); setMode('detail'); referForm.resetFields(); refresh();
+    } catch (e: any) { message.error(e.message); }
   };
   const admit = (id: string) => {
     Modal.confirm({
       title: '转入社区咨询？',
       content: '将为其匹配具危机干预资质的咨询师并生成预约（咨询师可看到本次分诊风险画像）。',
       onOk: async () => {
-        const r = await post(`/worker/triage/${id}/admit-community`, {});
-        if (r.ok) { message.success(`已转入社区咨询，预约 ${r.appointmentId.slice(0, 8)}`); refresh(); }
+        try {
+          const r = await post(`/worker/triage/${id}/admit-community`, {});
+          if (r.ok) { message.success(`已转入社区咨询，预约 ${r.appointmentId.slice(0, 8)}`); refresh(); }
+        } catch (e: any) { message.error(e.message); }
       },
     });
   };
@@ -355,7 +364,7 @@ function TriageBoard() {
       <Table
         rowKey="id" dataSource={rows} pagination={false}
         columns={[
-          { title: '提交时间', render: (_, r) => dayjs(r.requestCreatedAt).format('MM-DD HH:mm') },
+          { title: '提交时间', render: (_, r) => fmtMin(r.requestCreatedAt) },
           { title: '居民', dataIndex: 'residentName' },
           { title: '主题', render: (_, r) => <><Tag>{r.topicCategory}</Tag><div style={{ maxWidth: 260 }}>{r.topic}</div></> },
           {
@@ -381,8 +390,8 @@ function TriageBoard() {
             <Descriptions size="small" bordered column={2}>
               <Descriptions.Item label="居民">{detail.resident?.realName}（{detail.resident?.phone}）</Descriptions.Item>
               <Descriptions.Item label="风险等级">{urgencyTag(detail.triage.riskLevel)}</Descriptions.Item>
-              <Descriptions.Item label="提交时间">{dayjs(detail.request?.createdAt).format('MM-DD HH:mm:ss')}</Descriptions.Item>
-              <Descriptions.Item label="社工响应时间">{detail.triage.respondedAt ? dayjs(detail.triage.respondedAt).format('MM-DD HH:mm:ss') : <Tag color="red">尚未响应</Tag>}</Descriptions.Item>
+              <Descriptions.Item label="提交时间">{fmtDateTime(detail.request?.createdAt)}</Descriptions.Item>
+              <Descriptions.Item label="社工响应时间">{detail.triage.respondedAt ? fmtDateTime(detail.triage.respondedAt) : <Tag color="red">尚未响应</Tag>}</Descriptions.Item>
               <Descriptions.Item label="来访主诉" span={2}>{detail.request?.topic}</Descriptions.Item>
               <Descriptions.Item label="命中关键词" span={2}>{(detail.request?.triageKeywords || []).map((k: string) => <Tag key={k} color="red">{k}</Tag>)}</Descriptions.Item>
               <Descriptions.Item label="紧急联系人" span={2}>
@@ -394,7 +403,7 @@ function TriageBoard() {
                 <Descriptions.Item label="联系人响应" span={2}>
                   {detail.triage.emergencyContactReached ? <Tag color="green">已联系上</Tag> : <Tag>未联系上</Tag>}
                   {detail.triage.emergencyContactResponse}
-                  <div className="muted">{dayjs(detail.triage.emergencyContactRespondedAt).format('MM-DD HH:mm:ss')}</div>
+                  <div className="muted">{fmtDateTime(detail.triage.emergencyContactRespondedAt)}</div>
                 </Descriptions.Item>
               )}
               {detail.triage.visitReason && (

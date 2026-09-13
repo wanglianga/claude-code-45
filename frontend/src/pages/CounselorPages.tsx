@@ -9,6 +9,7 @@ import {
   urgencyTag, statusTag, APPT_STATUS, URGENCY, CRISIS_STATUS, REFERRAL_RESULT,
 } from '../labels';
 import ChainTimeline from '../ChainTimeline';
+import { fmtTime, fmtMin, fmtDateTime } from '../time';
 
 const { TextArea } = Input;
 
@@ -127,7 +128,7 @@ function Cases() {
       <Table
         rowKey="id" dataSource={rows} pagination={{ pageSize: 8 }}
         columns={[
-          { title: '时间', render: (_, r) => dayjs(r.scheduledAt).format('MM-DD HH:mm') },
+          { title: '时间', render: (_, r) => fmtMin(r.scheduledAt) },
           { title: '居民', dataIndex: 'residentName' },
           { title: '主题', render: (_, r) => <><Tag>{r.topicCategory}</Tag>{r.topic?.slice(0, 14)}…</> },
           { title: '风险', dataIndex: 'crisisLevel', render: urgencyTag },
@@ -155,7 +156,7 @@ function Cases() {
                   <Descriptions size="small" column={1} style={{ marginTop: 6 }}>
                     <Descriptions.Item label="社工电话核实">
                       {detail.triage.visitReason}
-                      <div className="muted">响应人：{detail.triage.socialWorkerName}｜响应时间：{detail.triage.respondedAt ? dayjs(detail.triage.respondedAt).format('MM-DD HH:mm') : '—'}</div>
+                      <div className="muted">响应人：{detail.triage.socialWorkerName}｜响应时间：{detail.triage.respondedAt ? fmtMin(detail.triage.respondedAt) : '—'}</div>
                     </Descriptions.Item>
                     {detail.triage.scaleResult && <Descriptions.Item label="量表结果">{detail.triage.scaleResult}{detail.triage.scaleScore != null ? `（${detail.triage.scaleScore}分）` : ''}</Descriptions.Item>}
                     <Descriptions.Item label="紧急联系人">
@@ -189,12 +190,12 @@ function Cases() {
               <Card size="small" style={{ marginTop: 10 }} title="咨询记录（保密，仅承接咨询师可见全文）">
                 {detail.records.map((r: any) => (
                   <Descriptions key={r.id} size="small" column={1} bordered style={{ marginBottom: 8 }}>
-                    <Descriptions.Item label="时间">{dayjs(r.createdAt).format('YYYY-MM-DD HH:mm')}｜主题：{r.topic}｜风险评级 {URGENCY.find(u => u.value === r.riskLevel)?.label}</Descriptions.Item>
+                    <Descriptions.Item label="时间">{fmtDateTime(r.createdAt)}｜主题：{r.topic}｜风险评级 {URGENCY.find(u => u.value === r.riskLevel)?.label}</Descriptions.Item>
                     <Descriptions.Item label="咨询过程（保密）">{r.content}</Descriptions.Item>
                     <Descriptions.Item label="风险评估（社工可见级）">{r.riskAssessment || '—'}</Descriptions.Item>
                     <Descriptions.Item label="干预建议（保密）">{r.interventionAdvice}</Descriptions.Item>
                     <Descriptions.Item label="下次计划（居民可见）">
-                      {r.nextPlan || '—'}{r.nextAppointmentAt ? `（${dayjs(r.nextAppointmentAt).format('YYYY-MM-DD HH:mm')}）` : ''}
+                      {r.nextPlan || '—'}{r.nextAppointmentAt ? `（${fmtDateTime(r.nextAppointmentAt)}）` : ''}
                     </Descriptions.Item>
                   </Descriptions>
                 ))}
@@ -204,7 +205,7 @@ function Cases() {
             {detail.followups?.length > 0 && (
               <Card size="small" style={{ marginTop: 8 }} title="社工随访">
                 {detail.followups.map((f: any) => (
-                  <div key={f.id}>· {dayjs(f.createdAt).format('MM-DD')}（风险{URGENCY.find(u => u.value === f.riskLevel)?.label}）：{f.content}</div>
+                  <div key={f.id}>· {fmtTime(f.createdAt).slice(5,10)}（风险{URGENCY.find(u => u.value === f.riskLevel)?.label}）：{f.content}</div>
                 ))}
               </Card>
             )}

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Timeline, Tag, Empty } from 'antd';
 import { CHAIN_TYPE_LABEL } from './labels';
+import { fmtDateTime } from './time';
 
 export default function ChainTimeline({ events }: { events: any[] }) {
   if (!events?.length) return <Empty description="暂无服务链记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
@@ -18,7 +19,7 @@ export default function ChainTimeline({ events }: { events: any[] }) {
               <span className={e.crisisRelated ? 'chain-crisis' : ''}>{e.detail}</span>
             </div>
             <div className="muted" style={{ fontSize: 12 }}>
-              {e.actorName} · {new Date(e.createdAt).toLocaleString('zh-CN')}
+              {e.actorName} · {fmtDateTime(e.createdAt)} (UTC+8)
             </div>
           </div>
         ),

@@ -6,6 +6,7 @@ import {
 import dayjs from 'dayjs';
 import { get, post } from '../api';
 import { CRISIS_STATUS, REFERRAL_RESULT, REQ_STATUS, statusTag } from '../labels';
+import { fmtTime, fmtMin, fmtDateTime } from '../time';
 
 const { TextArea } = Input;
 
@@ -168,7 +169,7 @@ function Approvals() {
     try {
       const recs = await get(`/admin/family-requests/${r.id}/record`);
       Modal.info({
-        title: `批准单 ${r.applicantName} 可见的脱敏摘要（72h有效，至 ${dayjs(r.expiresAt).format('MM-DD HH:mm')}）`,
+        title: `批准单 ${r.applicantName} 可见的脱敏摘要（72h有效，至 ${fmtMin(r.expiresAt)}）`,
         width: 640,
         content: (
           <div>
@@ -214,7 +215,7 @@ function Approvals() {
             { title: '申请人', render: (_, r) => `${r.applicantName}（${r.relation}）` },
             { title: '联系方式', dataIndex: 'contact' },
             { title: '理由', dataIndex: 'reason' },
-            { title: '申请时间', render: (_, r) => dayjs(r.createdAt).format('MM-DD HH:mm') },
+            { title: '申请时间', render: (_, r) => fmtMin(r.createdAt) },
             {
               title: '操作', render: (_, r) => (
                 <Space>
@@ -245,10 +246,10 @@ function ApprovedFamilyList({ onView }: { onView: (r: any) => void }) {
         { title: '家属', render: (_, r) => `${r.applicantName}（${r.relation}）` },
         {
           title: '授权状态', render: (_, r) => r.viewedAt
-            ? <Tag color="red">一次性授权已使用（{dayjs(r.viewedAt).format('MM-DD HH:mm')}）</Tag>
+            ? <Tag color="red">一次性授权已使用（{fmtMin(r.viewedAt)}）</Tag>
             : <Tag color="green">未使用，可查看一次</Tag>,
         },
-        { title: '有效期至', render: (_, r) => r.expiresAt ? dayjs(r.expiresAt).format('MM-DD HH:mm') : '—' },
+        { title: '有效期至', render: (_, r) => r.expiresAt ? fmtMin(r.expiresAt) : '—' },
         {
           title: '操作', render: (_, r) => r.viewedAt
             ? <Button size="small" disabled title="一次性授权已使用，再次查看将被拒绝并留痕">已查看</Button>
@@ -278,7 +279,7 @@ function Referrals() {
       <Table
         rowKey="id" dataSource={rows} pagination={false}
         columns={[
-          { title: '转出时间', render: (_, r) => dayjs(r.createdAt).format('MM-DD') },
+          { title: '转出时间', render: (_, r) => fmtTime(r.createdAt).slice(5,10) },
           { title: '目标', render: (_, r) => `${r.targetOrg}·${r.department}` },
           { title: '原因', dataIndex: 'reason', render: (v: string) => <span style={{ maxWidth: 260 }}>{v}</span> },
           {
@@ -326,7 +327,7 @@ function CrisisOverview() {
       <Table
         rowKey="id" dataSource={d.list} pagination={false}
         columns={[
-          { title: '时间', render: (_, r) => dayjs(r.createdAt).format('YYYY-MM-DD HH:mm') },
+          { title: '时间', render: (_, r) => fmtDateTime(r.createdAt) },
           { title: '级别', dataIndex: 'level', render: (v: string) => <Tag color="red">{v}</Tag> },
           { title: '描述', dataIndex: 'description' },
           { title: '处置', dataIndex: 'actionTaken' },

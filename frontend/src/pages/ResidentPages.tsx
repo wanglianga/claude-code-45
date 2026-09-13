@@ -10,6 +10,7 @@ import {
   APPT_STATUS, REQ_STATUS,
 } from '../labels';
 import ChainTimeline from '../ChainTimeline';
+import { fmtTime, fmtMin, fmtDateTime } from '../time';
 
 const { TextArea } = Input;
 
@@ -223,7 +224,7 @@ function Archive({ refreshKey }: { refreshKey: number }) {
       <Table
         rowKey="appointment.id" dataSource={data.appointments} pagination={false}
         columns={[
-          { title: '预约时间', render: (_, r) => dayjs(r.appointment.scheduledAt).format('YYYY-MM-DD HH:mm') },
+          { title: '预约时间', render: (_, r) => fmtDateTime(r.appointment.scheduledAt) },
           { title: '咨询师', dataIndex: ['appointment', 'counselorName'] },
           { title: '风险等级', render: (_, r) => urgencyTag(r.appointment.crisisLevel) },
           { title: '状态', render: (_, r) => statusTag(APPT_STATUS, r.appointment.status) },

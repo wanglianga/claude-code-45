@@ -6,6 +6,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-psycare}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-psycare}
       POSTGRES_DB: ${POSTGRES_DB:-psycare}
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
     volumes:
       - pgdata:/var/lib/postgresql/data
     # 数据库端口不发布到宿主，仅在 compose 内网互访
@@ -27,6 +29,7 @@ services:
       DB_NAME: ${POSTGRES_DB:-psycare}
       JWT_SECRET: ${JWT_SECRET:-psycare-demo-secret-change-me}
       PORT: 3000
+      TZ: Asia/Shanghai
     depends_on:
       db:
         condition: service_healthy
@@ -36,6 +39,8 @@ services:
   web:
     build: ./frontend
     container_name: ${COMPOSE_PROJECT_NAME}-web
+    environment:
+      TZ: Asia/Shanghai
     ports:
       - "${CC_PUBLISH_PORT}:8080"
     depends_on:

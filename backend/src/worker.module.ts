@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   Controller, Get, Post, Body, Param, Query, UseGuards, BadRequestException, NotFoundException,
+  ConflictException,
 } from '@nestjs/common';
 import { In, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -14,6 +15,19 @@ import { ChainModule } from './chain.module';
 import { ChainService } from './chain.service';
 import { MatchModule } from './match.module';
 import { MatchService } from './match.service';
+
+// 统一以明确的 Asia/Shanghai (UTC+8) 渲染正文时间；结构化时间仍存 timestamptz
+function fmtShanghai(d: Date | null | undefined, withSeconds = true): string {
+  if (!d) return '';
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: withSeconds ? '2-digit' : undefined,
+  }).formatToParts(d);
+  const get = t => parts.find(p => p.type === t)?.value || '';
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}${withSeconds ? ':' + get('second') : ''} (UTC+8)`;
+}
+
 
 class ScreeningDto {
   suitableCommunity: boolean;
@@ -363,6 +377,9 @@ export class WorkerController {
     },
   ) {
     const t = await this.requireTriage(id);
+    if (t.status !== 'in_progress') {
+      throw new ConflictException(`分诊单当前状态为「${t.status}」，已结束的分诊不能再电话核实`);
+    }
     if (!dto.visitReason) throw new BadRequestException('请记录来访原因（电话核实情况）');
     t.socialWorkerId = u.sub;
     t.socialWorkerName = u.realName;
@@ -383,14 +400,14 @@ export class WorkerController {
       ce.reporterId = u.sub;
       ce.status = 'processing';
       ce.actionTaken = (ce.actionTaken ? ce.actionTaken + '\n' : '') +
-        `${u.realName} 电话核实（${t.respondedAt.toLocaleString('zh-CN')}）：${dto.visitReason}` +
+        `${u.realName} 电话核实（${fmtShanghai(t.respondedAt)}）：${dto.visitReason}` +
         (dto.scaleResult ? `｜量表：${dto.scaleResult}${dto.scaleScore != null ? '=' + dto.scaleScore : ''}` : '');
       await this.crises.save(ce);
     }
 
     await this.chain.log({
       requestId: t.requestId, actorId: u.sub, actorName: u.realName, type: 'triage_verify',
-      detail: `社工电话核实完成，响应时间=${t.respondedAt.toLocaleString('zh-CN')}｜来访原因：${dto.visitReason}` +
+      detail: `社工电话核实完成，响应时间=${fmtShanghai(t.respondedAt)}｜来访原因：${dto.visitReason}` +
         (dto.scaleResult ? `｜量表结果：${dto.scaleResult}${dto.scaleScore != null ? '（' + dto.scaleScore + '分）' : ''}` : '') +
         (t.emergencyContactName ? `｜紧急联系人：${t.emergencyContactName}（${t.emergencyContactRelation}）${t.emergencyContactPhone}` : '') +
         `｜风险等级=${t.riskLevel}`,
@@ -411,6 +428,9 @@ export class WorkerController {
     },
   ) {
     const t = await this.requireTriage(id);
+    if (t.status !== 'in_progress') {
+      throw new ConflictException(`分诊单当前状态为「${t.status}」，已结束的分诊不能再联系紧急联系人`);
+    }
     if (!dto.response) throw new BadRequestException('请记录紧急联系人响应情况');
     if (!t.socialWorkerId) { t.socialWorkerId = u.sub; t.socialWorkerName = u.realName; t.respondedAt = new Date(); }
     t.emergencyContactReached = !!dto.reached;
@@ -430,13 +450,13 @@ export class WorkerController {
       }));
     ce.actionTaken = (ce.actionTaken ? ce.actionTaken + '\n' : '') +
       `${u.realName} 联系紧急联系人 ${t.emergencyContactName}（${t.emergencyContactRelation}）${t.emergencyContactPhone}：` +
-      `${dto.reached ? '已联系上' : '未能联系上'}，响应：${dto.response}（${t.emergencyContactRespondedAt.toLocaleString('zh-CN')}）`;
+      `${dto.reached ? '已联系上' : '未能联系上'}，响应：${dto.response}（${fmtShanghai(t.emergencyContactRespondedAt)}）`;
     if (ce.status === 'open') { ce.status = 'processing'; ce.reporterId = u.sub; }
     await this.crises.save(ce);
 
     await this.chain.log({
       requestId: t.requestId, actorId: u.sub, actorName: u.realName, type: 'emergency_contact',
-      detail: `联系紧急联系人 ${t.emergencyContactName}（${t.emergencyContactRelation}）：${dto.reached ? '已响应' : '未联系上'}｜${dto.response}`,
+      detail: `联系紧急联系人 ${t.emergencyContactName}（${t.emergencyContactRelation}）：${dto.reached ? '已响应' : '未联系上'}｜${dto.response}｜响应时间=${fmtShanghai(t.emergencyContactRespondedAt)}`,
       crisisRelated: true,
     });
     return { ok: true, crisisEventId: ce.id };
@@ -452,6 +472,12 @@ export class WorkerController {
     },
   ) {
     const t = await this.requireTriage(id);
+    if (t.status === 'referred' || t.status === 'closed') {
+      throw new ConflictException('该个案已转介医院且转介结果不可撤销，不能重复转介或改为社区接单');
+    }
+    if (t.status === 'admitted_community') {
+      throw new ConflictException('该个案已转入社区咨询，不能再转介医院');
+    }
     if (!dto.reason) throw new BadRequestException('请填写转介原因');
     const referral = await this.referrals.save(this.referrals.create({
       requestId: t.requestId, appointmentId: null,
@@ -488,6 +514,12 @@ export class WorkerController {
     @CurrentUser() u: JwtPayload, @Param('id') id: string, @Body() dto: { note?: string },
   ) {
     const t = await this.requireTriage(id);
+    if (t.status === 'referred' || t.status === 'closed') {
+      throw new ConflictException('医院回执后的转介结果不可被社区接单覆盖');
+    }
+    if (t.status === 'admitted_community') {
+      throw new ConflictException('该个案已转入社区咨询，不能重复接单');
+    }
     if (!t.visitReason) throw new BadRequestException('请先完成电话核实再转入社区咨询');
     const req = await this.requestRepo.findOne({ where: { id: t.requestId } });
     if (!req) throw new NotFoundException('申请不存在');
