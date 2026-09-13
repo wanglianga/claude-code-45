@@ -147,7 +147,31 @@ function Cases() {
       <Modal open={!!detail && !recOpen && !refOpen} title="个案详情（完整咨询档案）" width={820} footer={null} onCancel={() => setDetail(null)}>
         {detail && (
           <>
-            {['high', 'crisis'].includes(detail.appointment.crisisLevel) &&
+            {detail.triage && (
+              <Alert
+                style={{ marginBottom: 10 }} type="error" showIcon
+                message={<Space>高危分诊风险画像（接单前必读）{urgencyTag(detail.triage.riskLevel)}</Space>}
+                description={
+                  <Descriptions size="small" column={1} style={{ marginTop: 6 }}>
+                    <Descriptions.Item label="社工电话核实">
+                      {detail.triage.visitReason}
+                      <div className="muted">响应人：{detail.triage.socialWorkerName}｜响应时间：{detail.triage.respondedAt ? dayjs(detail.triage.respondedAt).format('MM-DD HH:mm') : '—'}</div>
+                    </Descriptions.Item>
+                    {detail.triage.scaleResult && <Descriptions.Item label="量表结果">{detail.triage.scaleResult}{detail.triage.scaleScore != null ? `（${detail.triage.scaleScore}分）` : ''}</Descriptions.Item>}
+                    <Descriptions.Item label="紧急联系人">
+                      {detail.triage.emergencyContactName
+                        ? `${detail.triage.emergencyContactName}（${detail.triage.emergencyContactRelation}）${detail.triage.emergencyContactPhone}`
+                        : '未填写'}
+                      {detail.triage.emergencyContactResponse && (
+                        <div>联系人响应：{detail.triage.emergencyContactReached ? '已联系上' : '未联系上'}｜{detail.triage.emergencyContactResponse}</div>
+                      )}
+                    </Descriptions.Item>
+                    {detail.triage.actionNote && <Descriptions.Item label="分流处置记录">{detail.triage.actionNote}</Descriptions.Item>}
+                  </Descriptions>
+                }
+              />
+            )}
+            {['high', 'crisis'].includes(detail.appointment.crisisLevel) && !detail.triage &&
               <Alert type="error" showIcon style={{ marginBottom: 10 }} message="危机个案：记录与处置按危机通道管理" />}
             <Descriptions size="small" bordered column={2}>
               <Descriptions.Item label="居民">{detail.resident.realName}（{detail.resident.age}岁，{detail.resident.phone}）</Descriptions.Item>

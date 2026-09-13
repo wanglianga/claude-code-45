@@ -1,5 +1,14 @@
 .env
 .env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*secret*
+*token*
+*credential*
+*credentials*
+*connection-string*
 
 node_modules/
 **/node_modules/
@@ -17,6 +26,9 @@ coverage/
 *.log
 *.tmp
 *.temp
+*.db
+*.sqlite
+*.sqlite3
 
 memory/
 **/memory/

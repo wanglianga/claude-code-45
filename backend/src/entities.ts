@@ -73,8 +73,12 @@ export class BookingRequest {
   @Column({ type: 'simple-json', default: [] }) preferredTimes: string[]; // 可约时间
   @Column({ default: false }) confidentialityAuthorized: boolean; // 保密授权
   @Column({ default: false }) crisisFlag: boolean;
+  @Column({ type: 'simple-json', default: [] }) triageKeywords: string[]; // 命中的自伤风险关键词
+  @Column({ default: '' }) emergencyContactName: string;     // 紧急联系人
+  @Column({ default: '' }) emergencyContactRelation: string;
+  @Column({ default: '' }) emergencyContactPhone: string;
   @Column({ type: 'varchar', default: 'submitted' })
-  status: 'submitted' | 'matched' | 'converted' | 'crisis_handled' | 'cancelled';
+  status: 'submitted' | 'triage' | 'matched' | 'converted' | 'crisis_handled' | 'cancelled';
   @Column({ type: 'uuid', nullable: true }) matchedCounselorId: string | null;
   @Column({ type: 'text', default: '' }) adminNote: string;
   @Column({ type: 'timestamptz', default: () => 'now()' }) createdAt: Date;
@@ -138,6 +142,39 @@ export class Screening {
   @ManyToOne('Appointment') @JoinColumn({ name: 'appointment_id' }) appointment: Appointment;
 }
 
+// 高危预约即时分流：自伤风险关键词触发，跳过普通排班，由社工先电话核实/联系紧急联系人/转介医院
+@Entity('high_risk_triages')
+export class HighRiskTriage {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column({ unique: true }) requestId: string;
+  @Column() residentId: string;
+  @Column({ type: 'uuid', nullable: true }) socialWorkerId: string | null;
+  @Column() socialWorkerName: string;
+  // 来访原因（社工电话核实记录）
+  @Column({ type: 'text' }) visitReason: string;
+  // 量表结果（如 PHQ-9 / 自杀风险评估）
+  @Column({ type: 'text', default: '' }) scaleResult: string;
+  @Column({ type: 'int', nullable: true }) scaleScore: number | null;
+  // 紧急联系人
+  @Column({ default: '' }) emergencyContactName: string;
+  @Column({ default: '' }) emergencyContactRelation: string;
+  @Column({ default: '' }) emergencyContactPhone: string;
+  // 紧急联系人是否响应
+  @Column({ default: false }) emergencyContactReached: boolean;
+  @Column({ type: 'text', default: '' }) emergencyContactResponse: string;
+  @Column({ type: 'timestamptz', nullable: true }) emergencyContactRespondedAt: Date | null;
+  // 风险分级与处置
+  @Column({ type: 'varchar' }) riskLevel: Urgency;
+  @Column({ type: 'varchar', default: 'in_progress' })
+  status: 'in_progress' | 'referred' | 'admitted_community' | 'closed';
+  @Column({ type: 'text', default: '' }) actionNote: string;
+  @Column({ type: 'uuid', nullable: true }) referralId: string | null;
+  @Column({ type: 'uuid', nullable: true }) appointmentId: string | null; // 转入社区咨询后生成的预约
+  @Column({ type: 'timestamptz', nullable: true }) respondedAt: Date | null;  // 社工首次响应时间
+  @Column({ type: 'timestamptz', nullable: true }) completedAt: Date | null;  // 分流完成时间
+  @Column({ type: 'timestamptz', default: () => 'now()' }) createdAt: Date;
+}
+
 // 咨询记录（按权限保护）
 @Entity('consultation_records')
 export class ConsultationRecord {
@@ -162,7 +199,8 @@ export class ConsultationRecord {
 @Entity('referrals')
 export class Referral {
   @PrimaryGeneratedColumn('uuid') id: string;
-  @Column() appointmentId: string;
+  @Column({ type: 'uuid', nullable: true }) appointmentId: string | null;
+  @Column({ type: 'uuid', nullable: true }) requestId: string | null; // 高危分流阶段（尚未生成预约）的转介
   @Column({ type: 'varchar', default: 'hospital_psychiatry' })
   type: 'hospital_psychiatry' | 'community_internal' | 'crisis_hotline';
   @Column({ default: '市精神卫生中心' }) targetOrg: string;
@@ -185,8 +223,9 @@ export class Referral {
 export class CrisisEvent {
   @PrimaryGeneratedColumn('uuid') id: string;
   @Column({ type: 'uuid', nullable: true }) appointmentId: string | null;
+  @Column({ type: 'uuid', nullable: true }) requestId: string | null;
   @Column() residentId: string;
-  @Column() reporterId: string;
+  @Column({ type: 'uuid', nullable: true }) reporterId: string | null; // 系统自动识别时为空
   @Column({ type: 'varchar' }) level: SelfHarmRisk;
   @Column({ type: 'text' }) description: string;
   @Column({ type: 'text', default: '' }) actionTaken: string;

@@ -47,6 +47,18 @@ function Dashboard() {
         <Col span={4}><Card><Statistic title="平均评价" value={s.volume.avgRating ?? '—'} suffix={s.volume.avgRating ? '/5' : ''} /></Card></Col>
       </Row>
 
+      {s.triage && (
+        <Card title="高危预约即时分流" style={{ marginTop: 16 }}>
+          <Row gutter={16}>
+            <Col span={5}><Statistic title="触发分流总数" value={s.triage.total} /></Col>
+            <Col span={5}><Statistic title="社工处置中" value={s.triage.pending} valueStyle={{ color: '#cf1322' }} /></Col>
+            <Col span={5}><Statistic title="已转介医院" value={s.triage.referred} valueStyle={{ color: '#722ed1' }} /></Col>
+            <Col span={5}><Statistic title="转入社区咨询" value={s.triage.admittedCommunity} valueStyle={{ color: '#1677ff' }} /></Col>
+            <Col span={4}><Statistic title="回执闭环" value={s.triage.closed} valueStyle={{ color: '#3f8600' }} /></Col>
+          </Row>
+        </Card>
+      )}
+
       <Card title="供给决策建议（由服务量·风险等级·转介结果自动生成）" extra={<Button size="small" onClick={load}>刷新</Button>}>
         <Space direction="vertical" style={{ width: '100%' }}>
           {s.recommendations.map((r: any, i: number) => (

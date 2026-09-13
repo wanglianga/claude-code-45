@@ -9,10 +9,14 @@ import { Repository, In, MoreThan } from 'typeorm';
 import {
   User, CounselorProfile, AvailabilitySlot, BookingRequest, Appointment,
   ConsultationRecord, ServiceRating, FamilyAccessRequest, ServiceChainEvent,
+  HighRiskTriage, CrisisEvent,
 } from './entities';
 import { AuthGuard, CurrentUser, JwtPayload, Roles } from './auth.guard';
 import { ChainModule } from './chain.module';
 import { ChainService } from './chain.service';
+import { MatchModule } from './match.module';
+import { MatchService } from './match.service';
+import { detectSelfHarmKeywords } from './triage.util';
 
 const CRISIS_URGENCIES = ['high', 'crisis'];
 
@@ -25,6 +29,9 @@ class CreateRequestDto {
   priorCounseling?: string;
   preferredTimes?: string[];
   confidentialityAuthorized: boolean;
+  emergencyContactName?: string;
+  emergencyContactRelation?: string;
+  emergencyContactPhone?: string;
 }
 
 class RatingDto { score: number; comment?: string; }
@@ -42,7 +49,10 @@ export class ResidentController {
     @InjectRepository(ConsultationRecord) private records: Repository<ConsultationRecord>,
     @InjectRepository(ServiceRating) private ratings: Repository<ServiceRating>,
     @InjectRepository(FamilyAccessRequest) private family: Repository<FamilyAccessRequest>,
+    @InjectRepository(HighRiskTriage) private triages: Repository<HighRiskTriage>,
+    @InjectRepository(CrisisEvent) private crises: Repository<CrisisEvent>,
     private chain: ChainService,
+    private matcher: MatchService,
   ) {}
 
   // ---------- 预约申请 ----------
@@ -53,35 +63,88 @@ export class ResidentController {
       throw new BadRequestException('需先签署保密授权才能提交预约');
     }
     if (!dto.topic || dto.age == null) throw new BadRequestException('主题与年龄必填');
-    const crisis =
+
+    // 自伤风险关键词即时识别（主题 + 既往咨询文本）
+    const keywords = detectSelfHarmKeywords(dto.topic, dto.priorCounseling || '');
+    const crisisByForm =
       CRISIS_URGENCIES.includes(dto.urgency) ||
       ['plan', 'recent_act'].includes(dto.selfHarmRisk);
+    // 命中关键词即视为高危，即使居民选择的紧急程度较低
+    const crisis = crisisByForm || keywords.length > 0;
+
     const req = await this.requests.save(this.requests.create({
       residentId: u.sub,
       topicCategory: dto.topicCategory,
       topic: dto.topic,
       age: dto.age,
-      urgency: dto.urgency,
+      urgency: keywords.length > 0 && dto.urgency === 'low' ? 'high' : dto.urgency,
       selfHarmRisk: dto.selfHarmRisk,
       priorCounseling: dto.priorCounseling || '',
       preferredTimes: dto.preferredTimes || [],
       confidentialityAuthorized: true,
       crisisFlag: crisis,
+      triageKeywords: keywords,
+      emergencyContactName: dto.emergencyContactName || '',
+      emergencyContactRelation: dto.emergencyContactRelation || '',
+      emergencyContactPhone: dto.emergencyContactPhone || '',
     }));
     await this.chain.log({
       requestId: req.id, actorId: u.sub, actorName: u.realName,
       type: 'request',
-      detail: `提交预约申请：${dto.topicCategory}｜紧急程度=${dto.urgency}｜自伤风险=${dto.selfHarmRisk}`,
+      detail: `提交预约申请：${dto.topicCategory}｜紧急程度=${req.urgency}｜自伤风险=${dto.selfHarmRisk}` +
+        (dto.emergencyContactName ? `｜紧急联系人=${dto.emergencyContactName}(${dto.emergencyContactRelation})` : ''),
       crisisRelated: crisis,
     });
-    if (crisis) {
+
+    // 高危即时分流：仅当文本命中自伤风险关键词时触发，跳过普通排班。
+    // 表单显式填写的高危机等级（无关键词）仍走原有“危机资质匹配 + 社工初筛”通道。
+    if (keywords.length > 0) {
+      const triage = await this.triages.save(this.triages.create({
+        requestId: req.id, residentId: u.sub,
+        socialWorkerId: null, socialWorkerName: '',
+        visitReason: dto.topic,
+        scaleResult: '', scaleScore: null,
+        emergencyContactName: dto.emergencyContactName || '',
+        emergencyContactRelation: dto.emergencyContactRelation || '',
+        emergencyContactPhone: dto.emergencyContactPhone || '',
+        riskLevel: req.urgency === 'crisis' ? 'crisis' : 'high',
+        status: 'in_progress',
+      }));
+      req.status = 'triage';
+      await this.requests.save(req);
+
       await this.chain.log({
         requestId: req.id, actorName: '系统', type: 'crisis_flag',
-        detail: '危机标记：申请进入危机优先通道，须由具危机干预资质的咨询师承接',
+        detail: keywords.length
+          ? `高危即时分流：文本命中自伤风险关键词（${keywords.join('、')}），跳过普通排班，转社工电话核实/联系紧急联系人/评估转介`
+          : '高危即时分流：危机等级申请跳过普通排班，转社工即时处置',
         crisisRelated: true,
       });
+      // 自动开立危机事件，等待社工响应（紧急联系人响应后续写入同一事件）
+      const ce = await this.crises.save(this.crises.create({
+        requestId: req.id, residentId: u.sub, reporterId: null,
+        level: dto.selfHarmRisk === 'none' ? 'ideation' : dto.selfHarmRisk,
+        description: `平台自动识别高危预约：${dto.topic}` +
+          (keywords.length ? `（命中关键词：${keywords.join('、')}）` : ''),
+        actionTaken: dto.emergencyContactName
+          ? `待社工联系紧急联系人 ${dto.emergencyContactName}（${dto.emergencyContactRelation}）${dto.emergencyContactPhone}`
+          : '居民未填写紧急联系人，社工需优先电话核实并补录',
+        status: 'open',
+      }));
+      triage.actionNote = `危机事件 ${ce.id.slice(0, 8)} 已自动开立`;
+      await this.triages.save(triage);
+
+      return {
+        ok: true, triage: true,
+        request: req,
+        keywords,
+        message: keywords.length
+          ? `检测到自伤风险关键词（${keywords.join('、')}），已跳过普通排班并通知社工即时分流：电话核实、联系紧急联系人或转介医院`
+          : '该申请为高危个案，已进入社工即时分流通道',
+      };
     }
-    return { ok: true, request: await this.getRequestDetail(req.id, u) };
+
+    return { ok: true, triage: false, request: req };
   }
 
   @Get('requests')
@@ -106,7 +169,10 @@ export class ResidentController {
   @Get('requests/:id/candidates')
   async candidates(@CurrentUser() u: JwtPayload, @Param('id') id: string) {
     const req = await this.loadRequest(id, u);
-    const ranked = await this.rankCandidates(req);
+    if (req.status === 'triage') {
+      throw new ForbiddenException('该高危申请正在社工即时分流，暂不进入普通排班');
+    }
+    const ranked = await this.matcher.rankCandidates(req);
     return {
       crisis: req.crisisFlag,
       candidates: ranked.slice(0, 5).map(c => ({
@@ -126,10 +192,13 @@ export class ResidentController {
   @Post('requests/:id/match')
   async match(@CurrentUser() u: JwtPayload, @Param('id') id: string) {
     const req = await this.loadRequest(id, u);
+    if (req.status === 'triage') {
+      throw new ForbiddenException('高危申请须先由社工完成即时分流（电话核实/联系紧急联系人/转介医院），不能直接排班');
+    }
     if (['converted', 'cancelled', 'crisis_handled'].includes(req.status)) {
       throw new BadRequestException('该申请已处理，不能重复匹配');
     }
-    const ranked = await this.rankCandidates(req);
+    const ranked = await this.matcher.rankCandidates(req);
     if (!ranked.length || !ranked[0].slot) {
       return {
         ok: false,
@@ -252,74 +321,6 @@ export class ResidentController {
     return { ok: true, id: saved.id };
   }
 
-  // ---------- 匹配算法 ----------
-  private async rankCandidates(req: BookingRequest) {
-    const profiles = await this.profiles.find({
-      where: { active: true }, relations: ['user'],
-    });
-    const eligible = profiles.filter(p => {
-      if (!p.user?.active) return false;
-      // 危机等级 → 必须危机干预资质
-      if (req.crisisFlag && !p.crisisCertified) return false;
-      return true;
-    });
-
-    const today = new Date().toISOString().slice(0, 10);
-    const ranked = [];
-    for (const p of eligible) {
-      let score = 0;
-      const reasons: string[] = [];
-      if ((p.specialties || []).includes(req.topicCategory)) {
-        score += 5; reasons.push(`擅长「${req.topicCategory}」`);
-      }
-      if ((p.specialties || []).some(s => req.topic.includes(s))) {
-        score += 2; reasons.push('主题关键词匹配');
-      }
-      if (req.crisisFlag && p.crisisCertified) {
-        score += 8; reasons.push('具危机干预资质');
-      }
-      score += Math.min(p.yearsExperience, 10) * 0.3;
-
-      // 未来两周负载越低越优先
-      const upcoming = await this.appointments.count({
-        where: { counselorId: p.userId, scheduledAt: MoreThan(new Date()) },
-      });
-      score -= upcoming * 0.5;
-
-      // 可用时段：优先落在居民可约时间内
-      const slots = await this.slots.find({
-        where: { counselorId: p.userId, status: 'available' },
-        order: { date: 'ASC', startTime: 'ASC' },
-      });
-      let chosen = null; let chosenLabel = '';
-      const pref = (req.preferredTimes || []).map(t => t.replace(' ', 'T').slice(0, 16));
-      const timeOnly = pref.filter(t => t.length <= 5); // 仅 HH:mm
-      const fullDt = pref.filter(t => t.length > 5);
-      for (const s of slots) {
-        if (s.date < today) continue;
-        const label = `${s.date} ${s.startTime}`;
-        const iso = `${s.date}T${s.startTime}`;
-        const hitFull = fullDt.some(t => iso.startsWith(t) || t.startsWith(iso));
-        const hitTime = timeOnly.some(t => s.startTime === t);
-        if (hitFull || hitTime) {
-          chosen = s; chosenLabel = label; score += 4;
-          reasons.push(`时段符合居民可约时间（${label}）`);
-          break;
-        }
-      }
-      if (!chosen) {
-        chosen = slots.find(s => s.date >= today) || null;
-        if (chosen) chosenLabel = `${chosen.date} ${chosen.startTime}`;
-      }
-      ranked.push({
-        counselorId: p.userId, name: p.user.realName, title: p.title,
-        specialties: p.specialties || [], crisisCertified: p.crisisCertified,
-        score: Math.round(score * 10) / 10, reasons, slot: chosen, slotLabel: chosenLabel,
-      });
-    }
-    return ranked.sort((a, b) => b.score - a.score);
-  }
-
   private async loadRequest(id: string, u: JwtPayload): Promise<BookingRequest> {
     const req = await this.requests.findOne({ where: { id }, relations: ['resident'] });
     if (!req) throw new NotFoundException('申请不存在');
@@ -328,17 +329,14 @@ export class ResidentController {
     }
     return req;
   }
-
-  private async getRequestDetail(id: string, u: JwtPayload) {
-    return this.loadRequest(id, u);
-  }
 }
 
 @Module({
   imports: [TypeOrmModule.forFeature([
     User, CounselorProfile, AvailabilitySlot, BookingRequest, Appointment,
     ConsultationRecord, ServiceRating, FamilyAccessRequest,
-  ]), ChainModule],
+    HighRiskTriage, CrisisEvent,
+  ]), ChainModule, MatchModule],
   controllers: [ResidentController],
 })
 export class ResidentModule {}

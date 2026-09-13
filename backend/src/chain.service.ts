@@ -37,4 +37,13 @@ export class ChainService {
       order: { createdAt: 'ASC' },
     });
   }
+
+  // 合并申请阶段与预约阶段事件（高危分流的事件可能先挂在 requestId 上）
+  async timelineFor(requestId: string | null | undefined, appointmentId: string | null | undefined) {
+    if (!requestId && !appointmentId) return [];
+    const where: any[] = [];
+    if (requestId) where.push({ requestId });
+    if (appointmentId) where.push({ appointmentId });
+    return this.events.find({ where, order: { createdAt: 'ASC' } });
+  }
 }

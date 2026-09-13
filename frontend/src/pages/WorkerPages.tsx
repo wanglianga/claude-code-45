@@ -7,6 +7,7 @@ import dayjs from 'dayjs';
 import { get, post } from '../api';
 import {
   urgencyTag, statusTag, APPT_STATUS, URGENCY, SELF_HARM, CRISIS_STATUS, REFERRAL_RESULT,
+  TRIAGE_STATUS,
 } from '../labels';
 import ChainTimeline from '../ChainTimeline';
 
@@ -102,6 +103,22 @@ function Appointments() {
               <Descriptions.Item label="风险等级">{urgencyTag(detail.appointment.crisisLevel)}</Descriptions.Item>
               <Descriptions.Item label="问题描述" span={2}>{detail.request?.topic}</Descriptions.Item>
             </Descriptions>
+
+            {detail.triage && (
+              <Alert
+                style={{ marginTop: 10 }} type="error" showIcon
+                message={<Space>高危即时分流画像 {urgencyTag(detail.triage.riskLevel)}</Space>}
+                description={
+                  <div style={{ marginTop: 6 }}>
+                    <div>来访原因：{detail.triage.visitReason}</div>
+                    {detail.triage.scaleResult && <div>量表：{detail.triage.scaleResult}{detail.triage.scaleScore != null ? `（${detail.triage.scaleScore}分）` : ''}</div>}
+                    <div>紧急联系人：{detail.triage.emergencyContactName}（{detail.triage.emergencyContactRelation}）{detail.triage.emergencyContactPhone}</div>
+                    {detail.triage.emergencyContactResponse && <div>联系人响应：{detail.triage.emergencyContactResponse}</div>}
+                    <div className="muted">响应社工：{detail.triage.socialWorkerName}｜{detail.triage.respondedAt ? dayjs(detail.triage.respondedAt).format('MM-DD HH:mm') : '未响应'}</div>
+                  </div>
+                }
+              />
+            )}
 
             {detail.screening && (
               <Card size="small" style={{ marginTop: 10 }} title="初筛结论">
@@ -280,10 +297,193 @@ function CrisisBoard() {
   );
 }
 
+// 高危预约即时分流工作台
+function TriageBoard() {
+  const [rows, setRows] = useState<any[]>([]);
+  const [detail, setDetail] = useState<any>(null);
+  const [mode, setMode] = useState<'detail' | 'verify' | 'contact' | 'refer'>('detail');
+  const [form] = Form.useForm();
+  const [contactForm] = Form.useForm();
+  const [referForm] = Form.useForm();
+
+  const load = async () => {
+    const data = await get('/worker/triage');
+    setRows(data);
+  };
+  useEffect(() => { load(); }, []);
+  const open = async (id: string) => { setDetail(await get(`/worker/triage/${id}`)); setMode('detail'); };
+  const refresh = async () => { await load(); if (detail) { setDetail(await get(`/worker/triage/${detail.triage.id}`)); } };
+
+  const submitVerify = async () => {
+    const v = await form.validateFields();
+    await post(`/worker/triage/${detail.triage.id}/verify`, {
+      ...v,
+      scaleScore: v.scaleScore === '' || v.scaleScore == null ? null : Number(v.scaleScore),
+    });
+    message.success('电话核实已记录（响应时间已留痕）'); setMode('detail'); form.resetFields(); refresh();
+  };
+  const submitContact = async () => {
+    const v = await contactForm.validateFields();
+    await post(`/worker/triage/${detail.triage.id}/emergency-contact`, v);
+    message.success('紧急联系人响应已写入危机记录'); setMode('detail'); contactForm.resetFields(); refresh();
+  };
+  const submitRefer = async () => {
+    const v = await referForm.validateFields();
+    await post(`/worker/triage/${detail.triage.id}/refer`, v);
+    message.success('已转介医院，等待回执闭环'); setMode('detail'); referForm.resetFields(); refresh();
+  };
+  const admit = (id: string) => {
+    Modal.confirm({
+      title: '转入社区咨询？',
+      content: '将为其匹配具危机干预资质的咨询师并生成预约（咨询师可看到本次分诊风险画像）。',
+      onOk: async () => {
+        const r = await post(`/worker/triage/${id}/admit-community`, {});
+        if (r.ok) { message.success(`已转入社区咨询，预约 ${r.appointmentId.slice(0, 8)}`); refresh(); }
+      },
+    });
+  };
+
+  const pendingCount = rows.filter(r => r.status === 'in_progress').length;
+
+  return (
+    <Card
+      title={<Space><Badge count={pendingCount} showZero={false} color="red" />高危预约即时分流（关键词识别 · 跳过普通排班）</Space>}
+      extra={<Button size="small" onClick={load}>刷新</Button>}
+    >
+      <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+        message="处置顺序：电话核实来访原因与量表 → 联系紧急联系人（响应自动进入危机记录）→ 转介医院 或 风险可控后转入社区咨询；响应人、响应时间、转介结果全程留痕。" />
+      <Table
+        rowKey="id" dataSource={rows} pagination={false}
+        columns={[
+          { title: '提交时间', render: (_, r) => dayjs(r.requestCreatedAt).format('MM-DD HH:mm') },
+          { title: '居民', dataIndex: 'residentName' },
+          { title: '主题', render: (_, r) => <><Tag>{r.topicCategory}</Tag><div style={{ maxWidth: 260 }}>{r.topic}</div></> },
+          {
+            title: '命中关键词', dataIndex: 'keywords',
+            render: (k: string[]) => k?.length ? k.map(x => <Tag key={x} color="red">{x}</Tag>) : <span className="muted">表单危机等级</span>,
+          },
+          { title: '紧急联系人', render: (_, r) => r.emergencyContactName ? `${r.emergencyContactName}（${r.emergencyContactRelation}）` : <Tag color="orange">未填写</Tag> },
+          { title: '响应社工', render: (_, r) => r.socialWorkerName || <Tag color="red">待响应</Tag> },
+          { title: '状态', dataIndex: 'status', render: (v: string) => statusTag(TRIAGE_STATUS, v) },
+          {
+            title: '操作', render: (_, r) => (
+              <Space wrap>
+                <Button size="small" type="primary" danger={r.status === 'in_progress'} onClick={() => open(r.id)}>处置</Button>
+              </Space>
+            ),
+          },
+        ]}
+      />
+
+      <Modal open={!!detail && mode === 'detail'} title="高危分流处置单" width={820} footer={null} onCancel={() => setDetail(null)}>
+        {detail && (
+          <>
+            <Descriptions size="small" bordered column={2}>
+              <Descriptions.Item label="居民">{detail.resident?.realName}（{detail.resident?.phone}）</Descriptions.Item>
+              <Descriptions.Item label="风险等级">{urgencyTag(detail.triage.riskLevel)}</Descriptions.Item>
+              <Descriptions.Item label="提交时间">{dayjs(detail.request?.createdAt).format('MM-DD HH:mm:ss')}</Descriptions.Item>
+              <Descriptions.Item label="社工响应时间">{detail.triage.respondedAt ? dayjs(detail.triage.respondedAt).format('MM-DD HH:mm:ss') : <Tag color="red">尚未响应</Tag>}</Descriptions.Item>
+              <Descriptions.Item label="来访主诉" span={2}>{detail.request?.topic}</Descriptions.Item>
+              <Descriptions.Item label="命中关键词" span={2}>{(detail.request?.triageKeywords || []).map((k: string) => <Tag key={k} color="red">{k}</Tag>)}</Descriptions.Item>
+              <Descriptions.Item label="紧急联系人" span={2}>
+                {detail.triage.emergencyContactName
+                  ? `${detail.triage.emergencyContactName}（${detail.triage.emergencyContactRelation}）${detail.triage.emergencyContactPhone}`
+                  : <Tag color="orange">未填写，需补录</Tag>}
+              </Descriptions.Item>
+              {detail.triage.emergencyContactResponse && (
+                <Descriptions.Item label="联系人响应" span={2}>
+                  {detail.triage.emergencyContactReached ? <Tag color="green">已联系上</Tag> : <Tag>未联系上</Tag>}
+                  {detail.triage.emergencyContactResponse}
+                  <div className="muted">{dayjs(detail.triage.emergencyContactRespondedAt).format('MM-DD HH:mm:ss')}</div>
+                </Descriptions.Item>
+              )}
+              {detail.triage.visitReason && (
+                <>
+                  <Descriptions.Item label="来访原因（核实）" span={2}>{detail.triage.visitReason}</Descriptions.Item>
+                  <Descriptions.Item label="量表结果" span={2}>
+                    {detail.triage.scaleResult || '—'}{detail.triage.scaleScore != null ? `（${detail.triage.scaleScore}分）` : ''}
+                  </Descriptions.Item>
+                </>
+              )}
+              <Descriptions.Item label="处置状态" span={2}>{statusTag(TRIAGE_STATUS, detail.triage.status)}</Descriptions.Item>
+              {detail.triage.actionNote && <Descriptions.Item label="处置记录" span={2}>{detail.triage.actionNote}</Descriptions.Item>}
+            </Descriptions>
+
+            <Card size="small" style={{ marginTop: 10 }} title="服务链时间线"><ChainTimeline events={detail.timeline} /></Card>
+
+            {detail.triage.status === 'in_progress' && (
+              <Space style={{ marginTop: 10 }} wrap>
+                <Button type="primary" onClick={() => setMode('verify')}>① 电话核实（来访原因/量表/联系人）</Button>
+                <Button onClick={() => setMode('contact')}>② 联系紧急联系人</Button>
+                <Button danger onClick={() => setMode('refer')}>③ 转介医院</Button>
+                <Button type="primary" ghost disabled={!detail.triage.visitReason} onClick={() => admit(detail.triage.id)}>④ 风险可控，转入社区咨询</Button>
+              </Space>
+            )}
+          </>
+        )}
+      </Modal>
+
+      <Modal open={mode === 'verify'} title="电话核实" width={620} onOk={submitVerify} onCancel={() => setMode('detail')}>
+        <Form form={form} layout="vertical" initialValues={{
+          riskLevel: detail?.triage.riskLevel || 'high',
+          emergencyContactName: detail?.triage.emergencyContactName,
+          emergencyContactRelation: detail?.triage.emergencyContactRelation,
+          emergencyContactPhone: detail?.triage.emergencyContactPhone,
+        }}>
+          <Form.Item name="visitReason" label="来访原因（电话核实情况）" rules={[{ required: true }]}><TextArea rows={3} /></Form.Item>
+          <Space size="large">
+            <Form.Item name="scaleResult" label="量表名称/结果"><Input placeholder="如 PHQ-9 中度 / 自杀风险评估 高" /></Form.Item>
+            <Form.Item name="scaleScore" label="量表分值"><Input type="number" placeholder="如 18" /></Form.Item>
+            <Form.Item name="riskLevel" label="风险等级"><Select style={{ width: 130 }} options={URGENCY.map(u => ({ value: u.value, label: u.label }))} /></Form.Item>
+          </Space>
+          <Space size="large">
+            <Form.Item name="emergencyContactName" label="紧急联系人"><Input /></Form.Item>
+            <Form.Item name="emergencyContactRelation" label="关系"><Input /></Form.Item>
+            <Form.Item name="emergencyContactPhone" label="电话"><Input /></Form.Item>
+          </Space>
+          <Form.Item name="note" label="其他处置备注"><TextArea rows={2} /></Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal open={mode === 'contact'} title="联系紧急联系人（响应写入危机记录）" onOk={submitContact} onCancel={() => setMode('detail')}>
+        <Form form={contactForm} layout="vertical" initialValues={{
+          reached: true,
+          contactName: detail?.triage.emergencyContactName,
+          relation: detail?.triage.emergencyContactRelation,
+          phone: detail?.triage.emergencyContactPhone,
+        }}>
+          <Space size="large">
+            <Form.Item name="contactName" label="联系人姓名"><Input /></Form.Item>
+            <Form.Item name="relation" label="关系"><Input /></Form.Item>
+            <Form.Item name="phone" label="电话"><Input /></Form.Item>
+          </Space>
+          <Form.Item name="reached" label="是否联系上" valuePropName="checked"><Checkbox>已取得联系</Checkbox></Form.Item>
+          <Form.Item name="response" label="联系人响应/到场情况" rules={[{ required: true }]}>
+            <TextArea rows={3} placeholder="如：配偶已知情，承诺24小时陪护并陪同就医；或电话无人接听，已短信留言…" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal open={mode === 'refer'} title="转介医院（记录转介结果）" onOk={submitRefer} onCancel={() => setMode('detail')}>
+        <Form form={referForm} layout="vertical" initialValues={{ targetOrg: '市精神卫生中心', department: '精神科急诊' }}>
+          <Space size="large">
+            <Form.Item name="targetOrg" label="目标机构"><Input /></Form.Item>
+            <Form.Item name="department" label="科室"><Input /></Form.Item>
+          </Space>
+          <Form.Item name="reason" label="转介原因" rules={[{ required: true }]}>
+            <TextArea rows={3} placeholder="如：自杀计划具体、社会支持不足，需精神科急诊评估住院" />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </Card>
+  );
+}
+
 export default function WorkerPages() {
   return (
     <Tabs
       items={[
+        { key: 'triage', label: <span><Badge status="error" />高危即时分流</span>, children: <TriageBoard /> },
         { key: 'appts', label: '初筛与预约', children: <Appointments /> },
         { key: 'crisis', label: <span>危机处置台</span>, children: <CrisisBoard /> },
       ]}

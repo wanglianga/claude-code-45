@@ -7,11 +7,13 @@ import { In, Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   User, BookingRequest, Appointment, Screening, FollowUp, CrisisEvent,
-  Referral, AvailabilitySlot,
+  Referral, AvailabilitySlot, HighRiskTriage, ServiceChainEvent,
 } from './entities';
 import { AuthGuard, CurrentUser, JwtPayload, Roles } from './auth.guard';
 import { ChainModule } from './chain.module';
 import { ChainService } from './chain.service';
+import { MatchModule } from './match.module';
+import { MatchService } from './match.service';
 
 class ScreeningDto {
   suitableCommunity: boolean;
@@ -52,7 +54,11 @@ export class WorkerController {
     @InjectRepository(CrisisEvent) private crises: Repository<CrisisEvent>,
     @InjectRepository(Referral) private referrals: Repository<Referral>,
     @InjectRepository(AvailabilitySlot) private slots: Repository<AvailabilitySlot>,
+    @InjectRepository(HighRiskTriage) private triages: Repository<HighRiskTriage>,
+    @InjectRepository(ServiceChainEvent) private chainEvents: Repository<ServiceChainEvent>,
+    @InjectRepository(BookingRequest) private requestRepo: Repository<BookingRequest>,
     private chain: ChainService,
+    private matcher: MatchService,
   ) {}
 
   @Get('residents')
@@ -90,19 +96,20 @@ export class WorkerController {
       relations: ['resident', 'counselor', 'request'],
     });
     if (!a) throw new NotFoundException();
-    const [screening, followups, referrals, crisis, timeline] = await Promise.all([
+    const [screening, followups, referrals, crisis, timeline, triage] = await Promise.all([
       this.screenings.findOne({ where: { appointmentId: id } }),
       this.followUps.find({ where: { appointmentId: id }, order: { createdAt: 'ASC' } }),
       this.referrals.find({ where: { appointmentId: id }, order: { createdAt: 'ASC' } }),
       this.crises.find({ where: { appointmentId: id } }),
       this.chain.timeline(id),
+      a.requestId ? this.triages.findOne({ where: { requestId: a.requestId } }) : null,
     ]);
     return {
       appointment: a,
       request: a.request,
       resident: { id: a.resident.id, realName: a.resident.realName, phone: a.resident.phone },
       counselor: { id: a.counselor.id, realName: a.counselor.realName },
-      screening, followups, referrals, crisis, timeline,
+      screening, followups, referrals, crisis, timeline, triage,
     };
   }
 
@@ -296,6 +303,239 @@ export class WorkerController {
     return { ok: true };
   }
 
+  // ================= 高危预约即时分流 =================
+  @Get('triage')
+  async listTriage(@Query('status') status?: string) {
+    const where: any = {};
+    if (status) where.status = status;
+    const list = await this.triages.find({ where, order: { createdAt: 'ASC' } });
+    const result = [];
+    for (const t of list) {
+      const req = await this.requestRepo.findOne({ where: { id: t.requestId }, relations: ['resident'] });
+      if (!req) continue;
+      result.push({
+        ...t,
+        urgency: req.urgency,
+        selfHarmRisk: req.selfHarmRisk,
+        topicCategory: req.topicCategory,
+        topic: req.topic,
+        keywords: req.triageKeywords || [],
+        age: req.age,
+        residentName: req.resident?.realName,
+        residentPhone: req.resident?.phone,
+        preferredTimes: req.preferredTimes,
+        requestCreatedAt: req.createdAt,
+      });
+    }
+    return result;
+  }
+
+  @Get('triage/:id')
+  async triageDetail(@Param('id') id: string) {
+    const t = await this.triages.findOne({ where: { id } });
+    if (!t) throw new NotFoundException('分诊单不存在');
+    const req = await this.requestRepo.findOne({ where: { id: t.requestId }, relations: ['resident'] });
+    const chainWhere: any[] = [];
+    if (t.requestId) chainWhere.push({ requestId: t.requestId });
+    if (t.appointmentId) chainWhere.push({ appointmentId: t.appointmentId });
+    return {
+      triage: t,
+      request: req,
+      resident: req && { id: req.resident?.id, realName: req.resident?.realName, phone: req.resident?.phone },
+      timeline: chainWhere.length
+        ? await this.chainEvents.find({ where: chainWhere, order: { createdAt: 'ASC' } })
+        : [],
+    };
+  }
+
+  // 社工电话核实：来访原因、量表结果、紧急联系人、风险等级；记录响应时间
+  @Post('triage/:id/verify')
+  async verifyTriage(
+    @CurrentUser() u: JwtPayload, @Param('id') id: string, @Body() dto: {
+      visitReason: string;
+      scaleResult?: string;
+      scaleScore?: number | null;
+      emergencyContactName?: string;
+      emergencyContactRelation?: string;
+      emergencyContactPhone?: string;
+      riskLevel?: 'low' | 'medium' | 'high' | 'crisis';
+      note?: string;
+    },
+  ) {
+    const t = await this.requireTriage(id);
+    if (!dto.visitReason) throw new BadRequestException('请记录来访原因（电话核实情况）');
+    t.socialWorkerId = u.sub;
+    t.socialWorkerName = u.realName;
+    t.visitReason = dto.visitReason;
+    t.scaleResult = dto.scaleResult || '';
+    t.scaleScore = dto.scaleScore ?? null;
+    if (dto.emergencyContactName) t.emergencyContactName = dto.emergencyContactName;
+    if (dto.emergencyContactRelation) t.emergencyContactRelation = dto.emergencyContactRelation;
+    if (dto.emergencyContactPhone) t.emergencyContactPhone = dto.emergencyContactPhone;
+    if (dto.riskLevel) t.riskLevel = dto.riskLevel;
+    if (dto.note) t.actionNote = (t.actionNote ? t.actionNote + '\n' : '') + dto.note;
+    if (!t.respondedAt) t.respondedAt = new Date();
+    await this.triages.save(t);
+
+    // 同步自动开立的危机事件，标记社工已响应
+    const ce = await this.crises.findOne({ where: { requestId: t.requestId, status: 'open' } });
+    if (ce) {
+      ce.reporterId = u.sub;
+      ce.status = 'processing';
+      ce.actionTaken = (ce.actionTaken ? ce.actionTaken + '\n' : '') +
+        `${u.realName} 电话核实（${t.respondedAt.toLocaleString('zh-CN')}）：${dto.visitReason}` +
+        (dto.scaleResult ? `｜量表：${dto.scaleResult}${dto.scaleScore != null ? '=' + dto.scaleScore : ''}` : '');
+      await this.crises.save(ce);
+    }
+
+    await this.chain.log({
+      requestId: t.requestId, actorId: u.sub, actorName: u.realName, type: 'triage_verify',
+      detail: `社工电话核实完成，响应时间=${t.respondedAt.toLocaleString('zh-CN')}｜来访原因：${dto.visitReason}` +
+        (dto.scaleResult ? `｜量表结果：${dto.scaleResult}${dto.scaleScore != null ? '（' + dto.scaleScore + '分）' : ''}` : '') +
+        (t.emergencyContactName ? `｜紧急联系人：${t.emergencyContactName}（${t.emergencyContactRelation}）${t.emergencyContactPhone}` : '') +
+        `｜风险等级=${t.riskLevel}`,
+      crisisRelated: true,
+    });
+    return { ok: true, respondedAt: t.respondedAt };
+  }
+
+  // 联系紧急联系人：响应写入危机记录
+  @Post('triage/:id/emergency-contact')
+  async contactEmergency(
+    @CurrentUser() u: JwtPayload, @Param('id') id: string, @Body() dto: {
+      reached: boolean;
+      response: string;
+      contactName?: string;
+      relation?: string;
+      phone?: string;
+    },
+  ) {
+    const t = await this.requireTriage(id);
+    if (!dto.response) throw new BadRequestException('请记录紧急联系人响应情况');
+    if (!t.socialWorkerId) { t.socialWorkerId = u.sub; t.socialWorkerName = u.realName; t.respondedAt = new Date(); }
+    t.emergencyContactReached = !!dto.reached;
+    t.emergencyContactResponse = dto.response;
+    t.emergencyContactRespondedAt = new Date();
+    if (dto.contactName) t.emergencyContactName = dto.contactName;
+    if (dto.relation) t.emergencyContactRelation = dto.relation;
+    if (dto.phone) t.emergencyContactPhone = dto.phone;
+    await this.triages.save(t);
+
+    // 紧急联系人响应进入危机记录
+    const ce = (await this.crises.findOne({ where: { requestId: t.requestId } }))
+      || await this.crises.save(this.crises.create({
+        requestId: t.requestId, residentId: t.residentId, reporterId: u.sub,
+        level: t.riskLevel === 'crisis' ? 'plan' : 'ideation',
+        description: '高危分诊联系紧急联系人', status: 'processing',
+      }));
+    ce.actionTaken = (ce.actionTaken ? ce.actionTaken + '\n' : '') +
+      `${u.realName} 联系紧急联系人 ${t.emergencyContactName}（${t.emergencyContactRelation}）${t.emergencyContactPhone}：` +
+      `${dto.reached ? '已联系上' : '未能联系上'}，响应：${dto.response}（${t.emergencyContactRespondedAt.toLocaleString('zh-CN')}）`;
+    if (ce.status === 'open') { ce.status = 'processing'; ce.reporterId = u.sub; }
+    await this.crises.save(ce);
+
+    await this.chain.log({
+      requestId: t.requestId, actorId: u.sub, actorName: u.realName, type: 'emergency_contact',
+      detail: `联系紧急联系人 ${t.emergencyContactName}（${t.emergencyContactRelation}）：${dto.reached ? '已响应' : '未联系上'}｜${dto.response}`,
+      crisisRelated: true,
+    });
+    return { ok: true, crisisEventId: ce.id };
+  }
+
+  // 分诊转介医院（尚未生成预约阶段）；回执由管理者补录
+  @Post('triage/:id/refer')
+  async referFromTriage(
+    @CurrentUser() u: JwtPayload, @Param('id') id: string, @Body() dto: {
+      targetOrg?: string;
+      department?: string;
+      reason: string;
+    },
+  ) {
+    const t = await this.requireTriage(id);
+    if (!dto.reason) throw new BadRequestException('请填写转介原因');
+    const referral = await this.referrals.save(this.referrals.create({
+      requestId: t.requestId, appointmentId: null,
+      targetOrg: dto.targetOrg || '市精神卫生中心',
+      department: dto.department || '精神科急诊',
+      reason: dto.reason, createdById: u.sub, status: 'submitted',
+    }));
+    t.status = 'referred';
+    t.referralId = referral.id;
+    t.completedAt = new Date();
+    await this.triages.save(t);
+    const req = await this.requestRepo.findOne({ where: { id: t.requestId } });
+    if (req) { req.status = 'crisis_handled'; await this.requestRepo.save(req); }
+
+    const ce = await this.crises.findOne({ where: { requestId: t.requestId } });
+    if (ce) {
+      ce.escalatedToHospital = true;
+      ce.actionTaken = (ce.actionTaken ? ce.actionTaken + '\n' : '') +
+        `${u.realName} 转介 ${referral.targetOrg}·${referral.department}，等待医院回执`;
+      ce.status = 'processing';
+      await this.crises.save(ce);
+    }
+    await this.chain.log({
+      requestId: t.requestId, actorId: u.sub, actorName: u.realName, type: 'referral',
+      detail: `高危分流转介 ${referral.targetOrg}·${referral.department}：${dto.reason}（转介结果待回执）`,
+      crisisRelated: true,
+    });
+    return { ok: true, referralId: referral.id };
+  }
+
+  // 经核实风险可控 → 转入社区咨询：生成预约（危机资质咨询师），分诊闭环
+  @Post('triage/:id/admit-community')
+  async admitCommunity(
+    @CurrentUser() u: JwtPayload, @Param('id') id: string, @Body() dto: { note?: string },
+  ) {
+    const t = await this.requireTriage(id);
+    if (!t.visitReason) throw new BadRequestException('请先完成电话核实再转入社区咨询');
+    const req = await this.requestRepo.findOne({ where: { id: t.requestId } });
+    if (!req) throw new NotFoundException('申请不存在');
+    const ranked = await this.matcher.rankCandidates(req);
+    const best = ranked[0];
+    if (!best?.slot) {
+      throw new BadRequestException('暂无可承接的危机资质咨询师空档，请走转介医院或联系管理员排班');
+    }
+    const appt = await this.appointments.save(this.appointments.create({
+      requestId: req.id, residentId: req.residentId,
+      counselorId: best.counselorId, slotId: best.slot.id,
+      scheduledAt: new Date(`${best.slot.date}T${best.slot.startTime}:00`),
+      crisisLevel: req.urgency === 'crisis' ? 'crisis' : 'high',
+      status: 'pending',
+      statusReason: `高危分流后转入社区咨询（社工 ${u.realName} 电话核实）`,
+    }));
+    best.slot.status = 'booked'; best.slot.appointmentId = appt.id;
+    await this.slots.save(best.slot);
+
+    t.status = 'admitted_community';
+    t.appointmentId = appt.id;
+    t.completedAt = new Date();
+    if (dto?.note) t.actionNote = (t.actionNote ? t.actionNote + '\n' : '') + dto.note;
+    await this.triages.save(t);
+    req.status = 'matched'; req.matchedCounselorId = best.counselorId;
+    await this.requestRepo.save(req);
+
+    const ce = await this.crises.findOne({ where: { requestId: t.requestId } });
+    if (ce) {
+      ce.appointmentId = appt.id;
+      ce.actionTaken = (ce.actionTaken ? ce.actionTaken + '\n' : '') +
+        `经电话核实风险可控，转入社区咨询：${best.name}（${best.slotLabel}）`;
+      await this.crises.save(ce);
+    }
+    await this.chain.log({
+      requestId: req.id, appointmentId: appt.id, actorId: u.sub, actorName: u.realName,
+      type: 'triage_admit', crisisRelated: true,
+      detail: `高危分流结束：风险可控转入社区咨询，匹配 ${best.name}（${best.slotLabel}），咨询师接单前可查看分诊风险画像`,
+    });
+    return { ok: true, appointmentId: appt.id };
+  }
+
+  private async requireTriage(id: string) {
+    const t = await this.triages.findOne({ where: { id } });
+    if (!t) throw new NotFoundException('分诊单不存在');
+    return t;
+  }
+
   private async requireAppointment(id: string) {
     const a = await this.appointments.findOne({ where: { id } });
     if (!a) throw new NotFoundException('预约不存在');
@@ -306,7 +546,8 @@ export class WorkerController {
 @Module({
   imports: [TypeOrmModule.forFeature([
     User, BookingRequest, Appointment, Screening, FollowUp, CrisisEvent, Referral, AvailabilitySlot,
-  ]), ChainModule],
+    HighRiskTriage, ServiceChainEvent,
+  ]), ChainModule, MatchModule],
   controllers: [WorkerController],
 })
 export class WorkerModule {}

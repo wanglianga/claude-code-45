@@ -8,7 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import {
   User, CounselorProfile, AvailabilitySlot, BookingRequest, Appointment, Screening,
   ConsultationRecord, Referral, CrisisEvent, FollowUp, ServiceRating,
-  FamilyAccessRequest, LeaveRequest,
+  FamilyAccessRequest, LeaveRequest, HighRiskTriage,
 } from './entities';
 import { AuthGuard, CurrentUser, JwtPayload, Roles } from './auth.guard';
 import { ChainModule } from './chain.module';
@@ -32,6 +32,7 @@ export class AdminController {
     @InjectRepository(ServiceRating) private ratings: Repository<ServiceRating>,
     @InjectRepository(FamilyAccessRequest) private family: Repository<FamilyAccessRequest>,
     @InjectRepository(LeaveRequest) private leaves: Repository<LeaveRequest>,
+    @InjectRepository(HighRiskTriage) private triages: Repository<HighRiskTriage>,
     private chain: ChainService,
   ) {}
 
@@ -280,9 +281,17 @@ export class AdminController {
     r.receiptAt = new Date();
     await this.referrals.save(r);
     await this.chain.log({
-      appointmentId: r.appointmentId, actorId: u.sub, actorName: u.realName, type: 'receipt',
+      appointmentId: r.appointmentId, requestId: r.requestId,
+      actorId: u.sub, actorName: u.realName, type: 'receipt',
       detail: `转介回执：结果=${body.outcome}｜${body.receiptText}`, crisisRelated: true,
     });
+    // 分诊阶段转介收到回执 → 分诊单闭环
+    if (r.requestId && !r.appointmentId) {
+      const t = await this.triages.findOne({ where: { requestId: r.requestId } });
+      if (t) { t.status = 'closed'; t.completedAt = t.completedAt || new Date(); await this.triages.save(t); }
+      const req = await this.requests.findOne({ where: { id: r.requestId } });
+      if (req && req.status !== 'converted') { req.status = 'crisis_handled'; await this.requests.save(req); }
+    }
     return { ok: true };
   }
 
@@ -305,6 +314,7 @@ export class AdminController {
       crisisAppts, highAppts, totalRequests, crisisRequests, unmatched,
       totalCounselors, certifiedCounselors, totalWorkers,
       crisisOpen, crisisResolved, avgRatingRaw,
+      triageTotal, triagePending, triageReferred, triageAdmitted, triageClosed,
     ] = await Promise.all([
       this.appointments.count(),
       this.appointments.count({ where: { status: 'completed' } }),
@@ -322,6 +332,11 @@ export class AdminController {
       this.crises.count({ where: { status: 'open' } }),
       this.crises.count({ where: { status: 'resolved' } }),
       this.ratings.createQueryBuilder('r').select('AVG(r.score)', 'avg').getRawOne(),
+      this.triages.count(),
+      this.triages.count({ where: { status: 'in_progress' } }),
+      this.triages.count({ where: { status: 'referred' } }),
+      this.triages.count({ where: { status: 'admitted_community' } }),
+      this.triages.count({ where: { status: 'closed' } }),
     ]);
 
     // 按月服务量
@@ -374,6 +389,12 @@ export class AdminController {
         text: `有 ${unmatched} 份预约申请尚未匹配到咨询师，建议增加咨询师排班或人手`,
       });
     }
+    if (triagePending > 0) {
+      recommendations.push({
+        level: 'critical', type: 'training',
+        text: `有 ${triagePending} 例高危预约正在社工即时分流（待电话核实/联系紧急联系人/转介），请立即响应`,
+      });
+    }
     if (totalCounselors > 0 && avgLoad > 12) {
       recommendations.push({
         level: 'warning', type: 'capacity',
@@ -424,6 +445,13 @@ export class AdminController {
       referralResults: referralRows.map(r => ({ result: r.result, count: Number(r.count) })),
       screeningDecisions: screenRows.map(r => ({ decision: r.decision, count: Number(r.count) })),
       crisis: { open: crisisOpen, resolved: crisisResolved, crisisRequests },
+      triage: {
+        total: triageTotal, pending: triagePending,
+        // 已转介医院 = 待回执 + 已回执闭环
+        referred: triageReferred + triageClosed,
+        awaitingReceipt: triageReferred,
+        admittedCommunity: triageAdmitted, closed: triageClosed,
+      },
       supply: { totalCounselors, certifiedCounselors, totalWorkers, avgLoad: Number(avgLoad.toFixed(1)) },
       counselorLoad: loadBoard,
       recommendations,
@@ -435,7 +463,7 @@ export class AdminController {
   imports: [TypeOrmModule.forFeature([
     User, CounselorProfile, AvailabilitySlot, BookingRequest, Appointment, Screening,
     ConsultationRecord, Referral, CrisisEvent, FollowUp, ServiceRating,
-    FamilyAccessRequest, LeaveRequest,
+    FamilyAccessRequest, LeaveRequest, HighRiskTriage,
   ]), ChainModule],
   controllers: [AdminController],
 })

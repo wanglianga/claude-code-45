@@ -32,10 +32,18 @@ export const APPT_STATUS: Record<string, { label: string; color: string }> = {
 
 export const REQ_STATUS: Record<string, { label: string; color: string }> = {
   submitted: { label: '待匹配', color: 'gold' },
+  triage: { label: '高危分流中', color: 'red' },
   matched: { label: '已生成预约', color: 'blue' },
   converted: { label: '已进入服务', color: 'green' },
-  crisis_handled: { label: '危机处置中', color: 'red' },
+  crisis_handled: { label: '危机已处置/转介', color: 'volcano' },
   cancelled: { label: '已取消', color: 'default' },
+};
+
+export const TRIAGE_STATUS: Record<string, { label: string; color: string }> = {
+  in_progress: { label: '社工分流中', color: 'red' },
+  referred: { label: '已转介医院', color: 'purple' },
+  admitted_community: { label: '已转社区咨询', color: 'blue' },
+  closed: { label: '回执闭环', color: 'green' },
 };
 
 export const CRISIS_STATUS: Record<string, { label: string; color: string }> = {
@@ -78,4 +86,6 @@ export const CHAIN_TYPE_LABEL: Record<string, string> = {
   risk_upgrade: '风险升级', family_request: '家属申请', family_review: '家属申请审批',
   family_view: '家属查看记录', family_view_denied: '家属查看被拒',
   no_show: '爽约登记', leave_reschedule: '请假改约', leave_stranded: '请假挂起',
+  triage_verify: '高危分诊·电话核实', emergency_contact: '高危分诊·紧急联系人响应',
+  triage_admit: '高危分诊·转社区咨询',
 };

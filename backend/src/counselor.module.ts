@@ -8,6 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import {
   User, CounselorProfile, AvailabilitySlot, Appointment, Screening,
   ConsultationRecord, Referral, FamilyAccessRequest, FollowUp, CrisisEvent, LeaveRequest,
+  HighRiskTriage,
 } from './entities';
 import { AuthGuard, CurrentUser, JwtPayload, Roles } from './auth.guard';
 import { ChainModule } from './chain.module';
@@ -48,6 +49,7 @@ export class CounselorController {
     @InjectRepository(FollowUp) private followUps: Repository<FollowUp>,
     @InjectRepository(CrisisEvent) private crises: Repository<CrisisEvent>,
     @InjectRepository(LeaveRequest) private leaves: Repository<LeaveRequest>,
+    @InjectRepository(HighRiskTriage) private triages: Repository<HighRiskTriage>,
     private chain: ChainService,
   ) {}
 
@@ -130,19 +132,24 @@ export class CounselorController {
     });
     if (!a) throw new NotFoundException();
     if (a.counselorId !== u.sub) throw new BadRequestException('仅承接咨询师可查看本单完整记录');
-    const [screening, records, referrals, followups, crises, familyReqs, timeline] = await Promise.all([
+    const refWhere: any[] = [{ appointmentId: id }];
+    if (a.requestId) refWhere.push({ requestId: a.requestId });
+    const crisisWhere: any[] = [{ appointmentId: id }];
+    if (a.requestId) crisisWhere.push({ requestId: a.requestId });
+    const [screening, records, referrals, followups, crises, familyReqs, timeline, triage] = await Promise.all([
       this.screenings.findOne({ where: { appointmentId: id } }),
       this.records.find({ where: { appointmentId: id }, order: { createdAt: 'ASC' } }),
-      this.referrals.find({ where: { appointmentId: id }, order: { createdAt: 'ASC' } }),
+      this.referrals.find({ where: refWhere, order: { createdAt: 'ASC' } }),
       this.followUps.find({ where: { appointmentId: id }, order: { createdAt: 'ASC' } }),
-      this.crises.find({ where: { appointmentId: id } }),
+      this.crises.find({ where: crisisWhere }),
       this.family.find({ where: { appointmentId: id }, order: { createdAt: 'DESC' } }),
-      this.chain.timeline(id),
+      this.chain.timelineFor(a.requestId, id),
+      a.requestId ? this.triages.findOne({ where: { requestId: a.requestId } }) : null,
     ]);
     return {
       appointment: a, request: a.request,
       resident: { id: a.resident.id, realName: a.resident.realName, phone: a.resident.phone, age: a.request?.age },
-      screening, records, referrals, followups, crises,
+      screening, records, referrals, followups, crises, triage,
       familyRequests: familyReqs, timeline,
     };
   }
@@ -244,6 +251,7 @@ export class CounselorController {
   imports: [TypeOrmModule.forFeature([
     User, CounselorProfile, AvailabilitySlot, Appointment, Screening,
     ConsultationRecord, Referral, FamilyAccessRequest, FollowUp, CrisisEvent, LeaveRequest,
+    HighRiskTriage,
   ]), ChainModule],
   controllers: [CounselorController],
 })

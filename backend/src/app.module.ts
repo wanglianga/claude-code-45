@@ -4,7 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   User, CounselorProfile, AvailabilitySlot, BookingRequest, Appointment, Screening,
   ConsultationRecord, Referral, CrisisEvent, FollowUp, ServiceRating,
-  FamilyAccessRequest, LeaveRequest, ServiceChainEvent,
+  FamilyAccessRequest, LeaveRequest, ServiceChainEvent, HighRiskTriage,
 } from './entities';
 import { AuthModule } from './auth.module';
 import { ResidentModule } from './resident.module';
@@ -35,7 +35,7 @@ class SnakeNamingStrategy extends DefaultNamingStrategy {
       entities: [
         User, CounselorProfile, AvailabilitySlot, BookingRequest, Appointment, Screening,
         ConsultationRecord, Referral, CrisisEvent, FollowUp, ServiceRating,
-        FamilyAccessRequest, LeaveRequest, ServiceChainEvent,
+        FamilyAccessRequest, LeaveRequest, ServiceChainEvent, HighRiskTriage,
       ],
       synchronize: true,
       namingStrategy: new SnakeNamingStrategy(),
@@ -45,7 +45,7 @@ class SnakeNamingStrategy extends DefaultNamingStrategy {
     TypeOrmModule.forFeature([
       User, CounselorProfile, AvailabilitySlot, BookingRequest, Appointment,
       Screening, ConsultationRecord, Referral, CrisisEvent, FollowUp,
-      ServiceRating, FamilyAccessRequest, LeaveRequest, ServiceChainEvent,
+      ServiceRating, FamilyAccessRequest, LeaveRequest, ServiceChainEvent, HighRiskTriage,
     ]),
     AuthModule, ResidentModule, WorkerModule, CounselorModule, AdminModule,
   ],

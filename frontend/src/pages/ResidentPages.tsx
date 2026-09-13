@@ -17,6 +17,7 @@ function BookingForm({ onCreated }: { onCreated: () => void }) {
   const [form] = Form.useForm();
   const [times, setTimes] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [triageMsg, setTriageMsg] = useState<string | null>(null);
   const urgency = Form.useWatch('urgency', form);
   const selfHarm = Form.useWatch('selfHarmRisk', form);
   const crisis = urgency === 'high' || urgency === 'crisis' || selfHarm === 'plan' || selfHarm === 'recent_act';
@@ -27,8 +28,15 @@ function BookingForm({ onCreated }: { onCreated: () => void }) {
     try {
       const r = await post('/resident/requests', { ...v, preferredTimes: times });
       if (r.ok) {
+        if (r.triage) {
+          // 命中关键词/高危：平台不进入普通排班
+          setTriageMsg(r.message);
+          message.warning('已进入高危即时分流通道，社工将尽快与您联系');
+          form.resetFields(); setTimes([]); onCreated();
+          return;
+        }
         message.success('预约申请已提交');
-        // 危机自动匹配走优先通道；普通单也立即尝试平台匹配
+        // 普通单立即尝试平台匹配
         try {
           const m = await post(`/resident/requests/${r.request.id}/match`);
           if (m.ok) message.success('平台已根据资质/时段/主题/危机等级生成预约');
@@ -42,6 +50,13 @@ function BookingForm({ onCreated }: { onCreated: () => void }) {
 
   return (
     <Card>
+      {triageMsg && (
+        <Alert
+          type="error" showIcon closable style={{ marginBottom: 14 }}
+          message="高危预约已即时分流（未进入普通排班）" description={triageMsg}
+          onClose={() => setTriageMsg(null)}
+        />
+      )}
       {crisis && (
         <Alert
           type="error" showIcon style={{ marginBottom: 14 }}
@@ -70,6 +85,14 @@ function BookingForm({ onCreated }: { onCreated: () => void }) {
         <Form.Item label="既往咨询经历" name="priorCounseling">
           <TextArea rows={2} placeholder="此前是否做过心理咨询/治疗，如有请简述时间与情况（可选）" />
         </Form.Item>
+        <Card size="small" style={{ marginBottom: 16, background: '#fafafa' }}
+          title={<span style={{ fontSize: 13 }}>紧急联系人（高危情况下社工将优先与其联系）</span>}>
+          <Space size="large" wrap>
+            <Form.Item name="emergencyContactName" label="姓名" style={{ marginBottom: 8 }}><Input placeholder="如：张建国" /></Form.Item>
+            <Form.Item name="emergencyContactRelation" label="关系" style={{ marginBottom: 8 }}><Input placeholder="配偶/父母/子女" /></Form.Item>
+            <Form.Item name="emergencyContactPhone" label="电话" style={{ marginBottom: 8 }}><Input placeholder="手机号码" /></Form.Item>
+          </Space>
+        </Card>
         <Form.Item label="可约时间（可添加多个，平台将优先匹配符合的时段）">
           <TimePicker
             format="HH:mm" minuteStep={30}
@@ -132,10 +155,11 @@ function MyRequests({ refreshKey, onChanged }: { refreshKey: number; onChanged: 
           {
             title: '操作', render: (_, r) => (
               <Space>
-                <Button size="small" onClick={() => preview(r.id)}>匹配预览</Button>
+                <Button size="small" disabled={r.status === 'triage'} onClick={() => preview(r.id)}>匹配预览</Button>
                 {r.status === 'submitted' && (
                   <Button size="small" type="primary" onClick={() => doMatch(r.id)}>平台生成预约</Button>
                 )}
+                {r.status === 'triage' && <Tag color="red">社工即时分流中</Tag>}
               </Space>
             ),
           },

@@ -5,7 +5,7 @@ import * as bcrypt from 'bcryptjs';
 import {
   User, CounselorProfile, AvailabilitySlot, BookingRequest, Appointment, Screening,
   ConsultationRecord, Referral, CrisisEvent, FollowUp, ServiceRating,
-  FamilyAccessRequest, LeaveRequest, ServiceChainEvent,
+  FamilyAccessRequest, LeaveRequest, ServiceChainEvent, HighRiskTriage,
 } from './entities';
 
 function dateOffset(days: number): string {
@@ -31,6 +31,7 @@ export class SeedService implements OnModuleInit {
     @InjectRepository(FamilyAccessRequest) private family: Repository<FamilyAccessRequest>,
     @InjectRepository(LeaveRequest) private leaves: Repository<LeaveRequest>,
     @InjectRepository(ServiceChainEvent) private events: Repository<ServiceChainEvent>,
+    @InjectRepository(HighRiskTriage) private triages: Repository<HighRiskTriage>,
   ) {}
 
   async onModuleInit() {
@@ -202,6 +203,33 @@ export class SeedService implements OnModuleInit {
     await log({ appointmentId: a3.id, actorId: worker.id, actorName: '李社工', type: 'screening', detail: '初筛完成：适合社区咨询=false，风险=crisis', crisisRelated: true });
     await log({ appointmentId: a3.id, actorId: worker.id, actorName: '李社工', type: 'referral', detail: '初筛转介 市精神卫生中心·精神科急诊', crisisRelated: true });
     await log({ appointmentId: a3.id, actorId: admin.id, actorName: '王主任', type: 'receipt', detail: '转介回执：结果=hospitalized｜已收治住院', crisisRelated: true });
+
+    // ---------- 案例4：关键词触发的高危预约，待社工即时分流（未进入普通排班） ----------
+    const req4 = await this.requests.save(this.requests.create({
+      residentId: lin.id, topicCategory: '情绪压力',
+      topic: '最近被裁员，每晚失眠，脑子里反复出现不想活了的念头，抽屉里放着安眠药，怕自己哪天撑不住吞药',
+      age: 28, urgency: 'high', selfHarmRisk: 'ideation',
+      priorCounseling: '无', preferredTimes: ['10:00'],
+      confidentialityAuthorized: true, crisisFlag: true, status: 'triage',
+      triageKeywords: ['不想活', '安眠药', '吞药'],
+      emergencyContactName: '林建国', emergencyContactRelation: '父亲', emergencyContactPhone: '13500000001',
+    }));
+    await this.triages.save(this.triages.create({
+      requestId: req4.id, residentId: lin.id,
+      socialWorkerId: null, socialWorkerName: '',
+      visitReason: req4.topic, riskLevel: 'high', status: 'in_progress',
+      emergencyContactName: '林建国', emergencyContactRelation: '父亲', emergencyContactPhone: '13500000001',
+      actionNote: '危机事件已自动开立，等待社工电话核实',
+    }));
+    await this.crises.save(this.crises.create({
+      requestId: req4.id, residentId: lin.id, reporterId: null,
+      level: 'ideation',
+      description: `平台自动识别高危预约：${req4.topic}（命中关键词：不想活、安眠药、吞药）`,
+      actionTaken: '待社工联系紧急联系人 林建国（父亲）13500000001',
+      status: 'open',
+    }));
+    await log({ requestId: req4.id, actorId: lin.id, actorName: '林浩', type: 'request', detail: '提交预约申请：情绪压力｜紧急程度=high｜自伤风险=ideation｜紧急联系人=林建国(父亲)', crisisRelated: true });
+    await log({ requestId: req4.id, actorName: '系统', type: 'crisis_flag', detail: '高危即时分流：文本命中自伤风险关键词（不想活、安眠药、吞药），跳过普通排班，转社工电话核实/联系紧急联系人/评估转介', crisisRelated: true });
 
     // ---------- 待审批：陈立请假（覆盖一个未来预约日，演示改约链） ----------
     await this.leaves.save(this.leaves.create({
